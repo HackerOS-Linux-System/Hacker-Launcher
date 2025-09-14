@@ -1,3 +1,4 @@
+# main_window.py
 from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem, QPushButton, QTabWidget, QComboBox, QLineEdit, QLabel, QMessageBox, QFileDialog, QDialog, QGridLayout, QProgressDialog, QCheckBox, QTextEdit
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QIcon
@@ -152,7 +153,7 @@ class MainWindow(QMainWindow):
         row += 1
         runner_label = QLabel("Default Runner:")
         self.runner_combo = QComboBox()
-        self.runner_combo.addItems(['Native', 'Wine', 'Proton', 'Flatpak', 'Snap', 'Steam'])
+        self.runner_combo.addItems(['Native', 'Wine', 'Proton', 'Flatpak', 'Steam'])
         self.runner_combo.setCurrentText(self.settings['default_runner'])
         self.runner_combo.setObjectName('runner_combo')
         self.runner_combo.currentTextChanged.connect(self.update_settings)
@@ -213,7 +214,7 @@ class MainWindow(QMainWindow):
         about_layout = QVBoxLayout(about_widget)
         about_text = QTextEdit()
         about_text.setReadOnly(True)
-        about_text.setText("Hacker Launcher v1.0\nGitHub: https://github.com/HackerOS-Linux-System/Hacker-Launcher\nA launcher for running games with Proton/Wine easily.")
+        about_text.setText("Hacker Launcher v1.0\nGitHub: https://github.com/your-repo\nA launcher for running games with Proton/Wine easily.")
         about_layout.addWidget(about_text)
         tabs.addTab(about_widget, 'About')
         layout.addWidget(tabs)
@@ -287,7 +288,7 @@ class MainWindow(QMainWindow):
         row += 1
         runner_label = QLabel('Runner:')
         runner_combo = QComboBox()
-        runner_combo.addItems(['Native', 'Wine', 'Proton', 'Flatpak', 'Snap', 'Steam'])
+        runner_combo.addItems(['Native', 'Wine', 'Proton', 'Flatpak', 'Steam'])
         runner_combo.setCurrentText(self.settings['default_runner'])
         dlg_layout.addWidget(runner_label, row, 0)
         dlg_layout.addWidget(runner_combo, row, 1, 1, 2)
@@ -303,6 +304,20 @@ class MainWindow(QMainWindow):
         proton_widget.setVisible(runner_combo.currentText() == 'Proton')
         dlg_layout.addWidget(proton_widget, row, 0, 1, 3)
         row += 1
+        prefix_label = QLabel('Wine/Proton Prefix:')
+        prefix_edit = QLineEdit()
+        prefix_edit.setPlaceholderText("Select or enter prefix path")
+        prefix_browse_btn = QPushButton(QIcon.fromTheme("folder"), 'Browse')
+        prefix_browse_btn.clicked.connect(lambda: prefix_edit.setText(QFileDialog.getExistingDirectory(self, 'Select Prefix Directory')))
+        prefix_widget = QWidget()
+        prefix_layout = QHBoxLayout()
+        prefix_layout.addWidget(prefix_label)
+        prefix_layout.addWidget(prefix_edit)
+        prefix_layout.addWidget(prefix_browse_btn)
+        prefix_widget.setLayout(prefix_layout)
+        prefix_widget.setVisible(runner_combo.currentText() in ['Wine', 'Proton'])
+        dlg_layout.addWidget(prefix_widget, row, 0, 1, 3)
+        row += 1
         launch_label = QLabel('Launch Options:')
         launch_edit = QLineEdit()
         launch_edit.setPlaceholderText("e.g., --fullscreen --bigpicture --gamescope --adaptive-sync --width=1920 --height=1080")
@@ -310,15 +325,19 @@ class MainWindow(QMainWindow):
         dlg_layout.addWidget(launch_edit, row, 1, 1, 2)
         row += 1
         dxvk_check = QCheckBox("Enable DXVK/VKD3D")
+        dxvk_check.setVisible(runner_combo.currentText() in ['Wine', 'Proton'])
         dlg_layout.addWidget(dxvk_check, row, 0)
         row += 1
         esync_check = QCheckBox("Enable Esync (Override)")
+        esync_check.setVisible(runner_combo.currentText() in ['Wine', 'Proton'])
         dlg_layout.addWidget(esync_check, row, 0)
         row += 1
         fsync_check = QCheckBox("Enable Fsync (Override)")
+        fsync_check.setVisible(runner_combo.currentText() in ['Wine', 'Proton'])
         dlg_layout.addWidget(fsync_check, row, 0)
         row += 1
         dxvk_async_check = QCheckBox("Enable DXVK Async (Override)")
+        dxvk_async_check.setVisible(runner_combo.currentText() in ['Wine', 'Proton'])
         dlg_layout.addWidget(dxvk_async_check, row, 0)
         row += 1
         app_id_widget = QWidget()
@@ -333,8 +352,13 @@ class MainWindow(QMainWindow):
         row += 1
         def update_visibility(text):
             proton_widget.setVisible(text == 'Proton')
+            prefix_widget.setVisible(text in ['Wine', 'Proton'])
             app_id_widget.setVisible(text == 'Steam')
             browse_btn.setVisible(text != 'Steam')
+            dxvk_check.setVisible(text in ['Wine', 'Proton'])
+            esync_check.setVisible(text in ['Wine', 'Proton'])
+            fsync_check.setVisible(text in ['Wine', 'Proton'])
+            dxvk_async_check.setVisible(text in ['Wine', 'Proton'])
         runner_combo.currentTextChanged.connect(update_visibility)
         button_layout = QHBoxLayout()
         ok_btn = QPushButton(QIcon.fromTheme("dialog-ok"), 'Add Game')
@@ -357,14 +381,15 @@ class MainWindow(QMainWindow):
             enable_fsync = fsync_check.isChecked()
             enable_dxvk_async = dxvk_async_check.isChecked()
             app_id = app_id_edit.text() if runner == 'Steam' else ''
+            prefix = prefix_edit.text() if runner in ['Wine', 'Proton'] else ''
             if runner == 'Proton':
                 runner = proton_combo.currentText()
-            if not name or not (exe or app_id):
+            if not name or (runner != 'Steam' and not exe) or (runner == 'Steam' and not app_id):
                 QMessageBox.warning(self, 'Error', 'Name and Executable/App ID required')
                 return
-            prefix = ''
-            if runner in ['Wine'] or 'Proton' in runner:
+            if runner in ['Wine', 'Proton'] and not prefix:
                 prefix = os.path.join(self.config_manager.prefixes_dir, name.replace(' ', '_'))
+            if prefix:
                 os.makedirs(prefix, exist_ok=True)
             if os.name == 'posix' and ':' in exe:
                 exe = exe.replace('\\', '/').replace('C:', '/drive_c')
@@ -414,7 +439,7 @@ class MainWindow(QMainWindow):
             return
         name = self.games_list.item(selected, 0).text()
         game = next((g for g in self.games if g['name'] == name), None)
-        if not game or game['runner'] in ['Native', 'Flatpak', 'Snap', 'Steam']:
+        if not game or game['runner'] in ['Native', 'Flatpak', 'Steam']:
             QMessageBox.information(self, 'Info', 'No configuration needed for this runner')
             return
         if not shutil.which('winetricks'):
