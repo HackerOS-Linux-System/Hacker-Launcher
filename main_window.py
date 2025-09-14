@@ -1,11 +1,56 @@
-from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem, QPushButton, QTabWidget, QComboBox, QLineEdit, QLabel, QMessageBox, QFileDialog, QDialog, QGridLayout, QProgressDialog
-from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem, QPushButton, QTabWidget, QComboBox, QLineEdit, QLabel, QMessageBox, QFileDialog, QDialog, QGridLayout, QProgressDialog, QCheckBox, QTextEdit
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QIcon
 import os
 import subprocess
+import shutil
+import logging
 from proton_manager import ProtonManager
 from game_manager import GameManager
 from config_manager import ConfigManager
+
+class InstallThread(QThread):
+    update_progress = Signal(str, int, int)
+    finished = Signal(bool, str)
+
+    def __init__(self, manager, version, proton_type, custom_path=None, custom_type=None):
+        super().__init__()
+        self.manager = manager
+        self.version = version
+        self.proton_type = proton_type
+        self.custom_path = custom_path
+        self.custom_type = custom_type
+
+    def run(self):
+        def progress_callback(stage, value, total):
+            self.update_progress.emit(stage, value, total)
+        try:
+            if self.proton_type in ['GE', 'Official', 'Experimental']:
+                success, message = self.manager.install_proton(self.version, self.proton_type if self.proton_type != 'Experimental' else 'Official', progress_callback)
+            else:  # Custom
+                if self.custom_type == 'Tar.gz File':
+                    success, message = self.manager.install_custom_tar(self.custom_path, self.version, progress_callback)
+                else:
+                    success, message = self.manager.install_custom_folder(self.custom_path, self.version)
+            self.finished.emit(success, message)
+        except Exception as e:
+            self.finished.emit(False, str(e))
+
+class LoadProtonsThread(QThread):
+    protons_loaded = Signal(list)
+
+    def __init__(self, manager):
+        super().__init__()
+        self.manager = manager
+
+    def run(self):
+        try:
+            protons = self.manager.get_installed_protons()
+            self.protons_loaded.emit(protons)
+        except Exception as e:
+            logging.error(f"Error loading protons: {e}")
+            self.protons_loaded.emit([])
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -19,21 +64,22 @@ class MainWindow(QMainWindow):
         self.apply_fullscreen()
         self.setup_ui()
         self.load_games()
-        self.load_protons()
+        self.start_proton_loading()
+
     def apply_fullscreen(self):
         if self.settings['fullscreen']:
             self.showFullScreen()
         else:
             self.showNormal()
+
     def setup_ui(self):
         central = QWidget()
-        layout = QVBoxLayout()
+        layout = QVBoxLayout(central)
         tabs = QTabWidget()
         # Games tab
         games_widget = QWidget()
-        games_layout = QVBoxLayout()
-        self.games_list = QTableWidget()
-        self.games_list.setColumnCount(3)
+        games_layout = QVBoxLayout(games_widget)
+        self.games_list = QTableWidget(0, 3)
         self.games_list.setHorizontalHeaderLabels(['Game Name', 'Runner', 'Launch Options'])
         self.games_list.horizontalHeader().setStretchLastSection(True)
         self.games_list.setSelectionBehavior(QTableWidget.SelectRows)
@@ -57,13 +103,11 @@ class MainWindow(QMainWindow):
         buttons_layout.addWidget(remove_btn)
         buttons_layout.addWidget(config_btn)
         games_layout.addLayout(buttons_layout)
-        games_widget.setLayout(games_layout)
         tabs.addTab(games_widget, 'Games')
         # Protons tab
         protons_widget = QWidget()
-        protons_layout = QVBoxLayout()
-        self.protons_table = QTableWidget()
-        self.protons_table.setColumnCount(4)
+        protons_layout = QVBoxLayout(protons_widget)
+        self.protons_table = QTableWidget(0, 4)
         self.protons_table.setHorizontalHeaderLabels(['Version', 'Type', 'Installed Date', 'Status'])
         self.protons_table.horizontalHeader().setStretchLastSection(True)
         self.protons_table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -80,58 +124,76 @@ class MainWindow(QMainWindow):
         remove_btn.clicked.connect(self.remove_proton)
         remove_btn.setToolTip("Remove the selected Proton")
         refresh_btn = QPushButton(QIcon.fromTheme("view-refresh"), 'Refresh')
-        refresh_btn.clicked.connect(self.load_protons)
+        refresh_btn.clicked.connect(self.start_proton_loading)
         refresh_btn.setToolTip("Refresh the list of installed Protons")
+        stable_check = QCheckBox("Stable Only")
+        stable_check.setChecked(True)
+        stable_check.stateChanged.connect(self.start_proton_loading)
         buttons_layout.addWidget(install_btn)
         buttons_layout.addWidget(update_btn)
         buttons_layout.addWidget(remove_btn)
         buttons_layout.addWidget(refresh_btn)
+        buttons_layout.addWidget(stable_check)
         protons_layout.addLayout(buttons_layout)
-        protons_widget.setLayout(protons_layout)
         tabs.addTab(protons_widget, 'Protons')
         # Settings tab
         settings_widget = QWidget()
-        settings_layout = QGridLayout()
+        settings_layout = QGridLayout(settings_widget)
         settings_layout.addWidget(QLabel("Settings"), 0, 0, 1, 2)
         row = 1
         theme_label = QLabel("Theme:")
-        theme_combo = QComboBox()
-        theme_combo.addItems(['Dark (Default)', 'Light'])
-        theme_combo.setCurrentText(self.settings.get('theme', 'Dark (Default)'))
-        theme_combo.currentTextChanged.connect(self.update_settings)
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItems(['Dark (Default)', 'Light'])
+        self.theme_combo.setCurrentText(self.settings.get('theme', 'Dark (Default)'))
+        self.theme_combo.setObjectName('theme_combo')
+        self.theme_combo.currentTextChanged.connect(self.update_settings)
         settings_layout.addWidget(theme_label, row, 0)
-        settings_layout.addWidget(theme_combo, row, 1)
+        settings_layout.addWidget(self.theme_combo, row, 1)
         row += 1
         runner_label = QLabel("Default Runner:")
-        runner_combo = QComboBox()
-        runner_combo.addItems(['Native', 'Wine', 'Proton', 'Flatpak', 'Snap'])
-        runner_combo.setCurrentText(self.settings['default_runner'])
-        runner_combo.currentTextChanged.connect(self.update_settings)
+        self.runner_combo = QComboBox()
+        self.runner_combo.addItems(['Native', 'Wine', 'Proton', 'Flatpak', 'Snap', 'Steam'])
+        self.runner_combo.setCurrentText(self.settings['default_runner'])
+        self.runner_combo.setObjectName('runner_combo')
+        self.runner_combo.currentTextChanged.connect(self.update_settings)
         settings_layout.addWidget(runner_label, row, 0)
-        settings_layout.addWidget(runner_combo, row, 1)
+        settings_layout.addWidget(self.runner_combo, row, 1)
         row += 1
         update_label = QLabel("Auto-check Updates:")
-        update_combo = QComboBox()
-        update_combo.addItems(['Enabled', 'Disabled'])
-        update_combo.setCurrentText(self.settings['auto_update'])
-        update_combo.currentTextChanged.connect(self.update_settings)
+        self.update_combo = QComboBox()
+        self.update_combo.addItems(['Enabled', 'Disabled'])
+        self.update_combo.setCurrentText(self.settings['auto_update'])
+        self.update_combo.setObjectName('update_combo')
+        self.update_combo.currentTextChanged.connect(self.update_settings)
         settings_layout.addWidget(update_label, row, 0)
-        settings_layout.addWidget(update_combo, row, 1)
+        settings_layout.addWidget(self.update_combo, row, 1)
         row += 1
         fullscreen_label = QLabel("Fullscreen Mode:")
-        fullscreen_combo = QComboBox()
-        fullscreen_combo.addItems(['Enabled', 'Disabled'])
-        fullscreen_combo.setCurrentText('Enabled' if self.settings['fullscreen'] else 'Disabled')
-        fullscreen_combo.currentTextChanged.connect(self.update_settings)
+        self.fullscreen_combo = QComboBox()
+        self.fullscreen_combo.addItems(['Enabled', 'Disabled'])
+        self.fullscreen_combo.setCurrentText('Enabled' if self.settings['fullscreen'] else 'Disabled')
+        self.fullscreen_combo.setObjectName('fullscreen_combo')
+        self.fullscreen_combo.currentTextChanged.connect(self.update_settings)
         settings_layout.addWidget(fullscreen_label, row, 0)
-        settings_layout.addWidget(fullscreen_combo, row, 1)
+        settings_layout.addWidget(self.fullscreen_combo, row, 1)
         row += 1
-        launch_label = QLabel("Default Launch Options:")
-        launch_edit = QLineEdit(self.settings['default_launch_options'])
-        launch_edit.setPlaceholderText("e.g., --fullscreen --bigpicture")
-        launch_edit.textChanged.connect(self.update_settings)
-        settings_layout.addWidget(launch_label, row, 0)
-        settings_layout.addWidget(launch_edit, row, 1)
+        esync_check = QCheckBox("Enable Esync (Global)")
+        esync_check.setChecked(self.settings['enable_esync'])
+        esync_check.setObjectName('esync_check')
+        esync_check.stateChanged.connect(self.update_settings)
+        settings_layout.addWidget(esync_check, row, 0)
+        row += 1
+        fsync_check = QCheckBox("Enable Fsync (Global)")
+        fsync_check.setChecked(self.settings['enable_fsync'])
+        fsync_check.setObjectName('fsync_check')
+        fsync_check.stateChanged.connect(self.update_settings)
+        settings_layout.addWidget(fsync_check, row, 0)
+        row += 1
+        dxvk_async_check = QCheckBox("Enable DXVK Async (Global)")
+        dxvk_async_check.setChecked(self.settings['enable_dxvk_async'])
+        dxvk_async_check.setObjectName('dxvk_async_check')
+        dxvk_async_check.stateChanged.connect(self.update_settings)
+        settings_layout.addWidget(dxvk_async_check, row, 0)
         row += 1
         prefix_label = QLabel("Prefixes Location:")
         prefix_value = QLabel(self.config_manager.prefixes_dir)
@@ -145,20 +207,44 @@ class MainWindow(QMainWindow):
         settings_layout.addWidget(protons_label, row, 0)
         settings_layout.addWidget(protons_value, row, 1)
         settings_layout.setRowStretch(row, 1)
-        settings_widget.setLayout(settings_layout)
         tabs.addTab(settings_widget, 'Settings')
+        # About tab
+        about_widget = QWidget()
+        about_layout = QVBoxLayout(about_widget)
+        about_text = QTextEdit()
+        about_text.setReadOnly(True)
+        about_text.setText("Hacker Launcher v1.0\nGitHub: https://github.com/HackerOS-Linux-System/Hacker-Launcher\nA launcher for running games with Proton/Wine easily.")
+        about_layout.addWidget(about_text)
+        tabs.addTab(about_widget, 'About')
         layout.addWidget(tabs)
-        central.setLayout(layout)
         self.setCentralWidget(central)
+
+    def start_proton_loading(self):
+        self.protons_table.setRowCount(0)  # Clear table while loading
+        self.proton_thread = LoadProtonsThread(self.proton_manager)
+        self.proton_thread.protons_loaded.connect(self.load_protons)
+        self.proton_thread.start()
+
     def update_settings(self):
-        self.settings['theme'] = self.sender().currentText() if self.sender().objectName() == 'theme_combo' else self.settings.get('theme', 'Dark (Default)')
-        self.settings['default_runner'] = self.sender().currentText() if self.sender().objectName() == 'runner_combo' else self.settings['default_runner']
-        self.settings['auto_update'] = self.sender().currentText() if self.sender().objectName() == 'update_combo' else self.settings['auto_update']
-        self.settings['fullscreen'] = self.sender().currentText() == 'Enabled' if self.sender().objectName() == 'fullscreen_combo' else self.settings['fullscreen']
-        self.settings['default_launch_options'] = self.sender().text() if self.sender().objectName() == 'launch_edit' else self.settings['default_launch_options']
+        sender = self.sender()
+        obj_name = sender.objectName()
+        if obj_name == 'theme_combo':
+            self.settings['theme'] = sender.currentText()
+        elif obj_name == 'runner_combo':
+            self.settings['default_runner'] = sender.currentText()
+        elif obj_name == 'update_combo':
+            self.settings['auto_update'] = sender.currentText()
+        elif obj_name == 'fullscreen_combo':
+            self.settings['fullscreen'] = sender.currentText() == 'Enabled'
+            self.apply_fullscreen()
+        elif obj_name == 'esync_check':
+            self.settings['enable_esync'] = sender.isChecked()
+        elif obj_name == 'fsync_check':
+            self.settings['enable_fsync'] = sender.isChecked()
+        elif obj_name == 'dxvk_async_check':
+            self.settings['enable_dxvk_async'] = sender.isChecked()
         self.config_manager.save_settings(self.settings)
-        self.apply_fullscreen()
-        self.sender().setObjectName('') # Reset to avoid recursive calls
+
     def load_games(self):
         self.games_list.setRowCount(0)
         self.games = self.config_manager.load_games()
@@ -168,9 +254,9 @@ class MainWindow(QMainWindow):
             self.games_list.setItem(i, 1, QTableWidgetItem(game['runner']))
             self.games_list.setItem(i, 2, QTableWidgetItem(game.get('launch_options', '')))
         self.games_list.resizeColumnsToContents()
-    def load_protons(self):
+
+    def load_protons(self, protons):
         self.protons_table.setRowCount(0)
-        protons = self.proton_manager.get_installed_protons()
         self.protons_table.setRowCount(len(protons))
         for i, proton in enumerate(protons):
             self.protons_table.setItem(i, 0, QTableWidgetItem(proton['version']))
@@ -178,6 +264,7 @@ class MainWindow(QMainWindow):
             self.protons_table.setItem(i, 2, QTableWidgetItem(proton['date']))
             self.protons_table.setItem(i, 3, QTableWidgetItem(proton['status']))
         self.protons_table.resizeColumnsToContents()
+
     def add_game(self):
         add_dialog = QDialog(self)
         add_dialog.setWindowTitle("Add New Game")
@@ -191,7 +278,7 @@ class MainWindow(QMainWindow):
         row += 1
         exe_label = QLabel('Executable / App ID:')
         exe_edit = QLineEdit()
-        exe_edit.setPlaceholderText("Select game executable")
+        exe_edit.setPlaceholderText("Select game executable or enter Steam App ID")
         browse_btn = QPushButton(QIcon.fromTheme("folder"), 'Browse')
         browse_btn.clicked.connect(lambda: exe_edit.setText(QFileDialog.getOpenFileName(self, 'Select Executable', '/', 'Executables (*.exe *.bat);;All Files (*)')[0]))
         dlg_layout.addWidget(exe_label, row, 0)
@@ -200,7 +287,7 @@ class MainWindow(QMainWindow):
         row += 1
         runner_label = QLabel('Runner:')
         runner_combo = QComboBox()
-        runner_combo.addItems(['Native', 'Wine', 'Proton', 'Flatpak', 'Snap'])
+        runner_combo.addItems(['Native', 'Wine', 'Proton', 'Flatpak', 'Snap', 'Steam'])
         runner_combo.setCurrentText(self.settings['default_runner'])
         dlg_layout.addWidget(runner_label, row, 0)
         dlg_layout.addWidget(runner_combo, row, 1, 1, 2)
@@ -218,12 +305,37 @@ class MainWindow(QMainWindow):
         row += 1
         launch_label = QLabel('Launch Options:')
         launch_edit = QLineEdit()
-        launch_edit.setPlaceholderText("e.g., --fullscreen --bigpicture --gamescope")
-        launch_edit.setText(self.settings['default_launch_options'])
+        launch_edit.setPlaceholderText("e.g., --fullscreen --bigpicture --gamescope --adaptive-sync --width=1920 --height=1080")
         dlg_layout.addWidget(launch_label, row, 0)
         dlg_layout.addWidget(launch_edit, row, 1, 1, 2)
         row += 1
-        runner_combo.currentTextChanged.connect(lambda text: proton_widget.setVisible(text == 'Proton'))
+        dxvk_check = QCheckBox("Enable DXVK/VKD3D")
+        dlg_layout.addWidget(dxvk_check, row, 0)
+        row += 1
+        esync_check = QCheckBox("Enable Esync (Override)")
+        dlg_layout.addWidget(esync_check, row, 0)
+        row += 1
+        fsync_check = QCheckBox("Enable Fsync (Override)")
+        dlg_layout.addWidget(fsync_check, row, 0)
+        row += 1
+        dxvk_async_check = QCheckBox("Enable DXVK Async (Override)")
+        dlg_layout.addWidget(dxvk_async_check, row, 0)
+        row += 1
+        app_id_widget = QWidget()
+        app_id_layout = QHBoxLayout()
+        app_id_label = QLabel('Steam App ID:')
+        app_id_edit = QLineEdit()
+        app_id_layout.addWidget(app_id_label)
+        app_id_layout.addWidget(app_id_edit)
+        app_id_widget.setLayout(app_id_layout)
+        app_id_widget.setVisible(runner_combo.currentText() == 'Steam')
+        dlg_layout.addWidget(app_id_widget, row, 0, 1, 3)
+        row += 1
+        def update_visibility(text):
+            proton_widget.setVisible(text == 'Proton')
+            app_id_widget.setVisible(text == 'Steam')
+            browse_btn.setVisible(text != 'Steam')
+        runner_combo.currentTextChanged.connect(update_visibility)
         button_layout = QHBoxLayout()
         ok_btn = QPushButton(QIcon.fromTheme("dialog-ok"), 'Add Game')
         cancel_btn = QPushButton(QIcon.fromTheme("dialog-cancel"), 'Cancel')
@@ -234,24 +346,44 @@ class MainWindow(QMainWindow):
         button_layout.addWidget(cancel_btn)
         dlg_layout.addLayout(button_layout, row, 0, 1, 3)
         add_dialog.setLayout(dlg_layout)
-        add_dialog.resize(600, 300)
+        add_dialog.resize(600, 400)
         if add_dialog.exec() == QDialog.Accepted:
             name = name_edit.text()
             exe = exe_edit.text()
             runner = runner_combo.currentText()
             launch_options = launch_edit.text()
+            enable_dxvk = dxvk_check.isChecked()
+            enable_esync = esync_check.isChecked()
+            enable_fsync = fsync_check.isChecked()
+            enable_dxvk_async = dxvk_async_check.isChecked()
+            app_id = app_id_edit.text() if runner == 'Steam' else ''
             if runner == 'Proton':
                 runner = proton_combo.currentText()
-            if not name or not exe:
+            if not name or not (exe or app_id):
                 QMessageBox.warning(self, 'Error', 'Name and Executable/App ID required')
                 return
             prefix = ''
-            if runner in ['Wine'] or '-' in runner:
+            if runner in ['Wine'] or 'Proton' in runner:
                 prefix = os.path.join(self.config_manager.prefixes_dir, name.replace(' ', '_'))
                 os.makedirs(prefix, exist_ok=True)
-            game = {'name': name, 'exe': exe, 'runner': runner, 'prefix': prefix, 'launch_options': launch_options}
+            if os.name == 'posix' and ':' in exe:
+                exe = exe.replace('\\', '/').replace('C:', '/drive_c')
+            game = {
+                'name': name,
+                'exe': exe,
+                'runner': runner,
+                'prefix': prefix,
+                'launch_options': launch_options,
+                'enable_dxvk': enable_dxvk,
+                'enable_esync': enable_esync,
+                'enable_fsync': enable_fsync,
+                'enable_dxvk_async': enable_dxvk_async,
+                'app_id': app_id
+            }
             self.game_manager.add_game(game)
             self.load_games()
+            QMessageBox.information(self, 'Success', 'Game added successfully!')
+
     def launch_game(self):
         selected = self.games_list.currentRow()
         if selected < 0:
@@ -263,7 +395,9 @@ class MainWindow(QMainWindow):
             try:
                 self.game_manager.launch_game(game, '--gamescope' in game.get('launch_options', ''))
             except Exception as e:
+                logging.error(f"Error launching {name}: {e}")
                 QMessageBox.warning(self, 'Error', str(e))
+
     def remove_game(self):
         selected = self.games_list.currentRow()
         if selected < 0:
@@ -272,6 +406,7 @@ class MainWindow(QMainWindow):
         name = self.games_list.item(selected, 0).text()
         self.game_manager.remove_game(name)
         self.load_games()
+
     def configure_game(self):
         selected = self.games_list.currentRow()
         if selected < 0:
@@ -279,20 +414,47 @@ class MainWindow(QMainWindow):
             return
         name = self.games_list.item(selected, 0).text()
         game = next((g for g in self.games if g['name'] == name), None)
-        if not game or game['runner'] in ['Native', 'Flatpak', 'Snap']:
+        if not game or game['runner'] in ['Native', 'Flatpak', 'Snap', 'Steam']:
             QMessageBox.information(self, 'Info', 'No configuration needed for this runner')
             return
-        prefix = game['prefix']
+        if not shutil.which('winetricks'):
+            QMessageBox.warning(self, 'Error', 'Winetricks not installed. Please install it.')
+            return
+        tricks_dialog = QDialog(self)
+        tricks_dialog.setWindowTitle("Install Winetricks Libraries")
+        tricks_layout = QVBoxLayout()
+        tricks_label = QLabel("Select libraries to install:")
+        tricks_list = QComboBox()
+        popular_tricks = ['dotnet48', 'vcrun2019', 'dxvk', 'vkd3d', 'corefonts', 'd3dcompiler_47', 'physx', 'msls31']
+        tricks_list.addItems(popular_tricks)
+        install_btn = QPushButton('Install Selected')
+        def install_trick():
+            trick = tricks_list.currentText()
+            prefix = game['prefix']
+            env = os.environ.copy()
+            env['WINEPREFIX'] = prefix
+            try:
+                subprocess.run(['winetricks', '--unattended', trick], env=env, check=True)
+                QMessageBox.information(self, 'Success', f'{trick} installed')
+            except Exception as e:
+                QMessageBox.warning(self, 'Error', str(e))
+        install_btn.clicked.connect(install_trick)
+        tricks_layout.addWidget(tricks_label)
+        tricks_layout.addWidget(tricks_list)
+        tricks_layout.addWidget(install_btn)
+        tricks_dialog.setLayout(tricks_layout)
+        tricks_dialog.exec()
         env = os.environ.copy()
-        env['WINEPREFIX'] = prefix
+        env['WINEPREFIX'] = game['prefix']
         subprocess.Popen(['winetricks'], env=env)
+
     def install_proton(self):
         install_dialog = QDialog(self)
         install_dialog.setWindowTitle("Install Proton")
         layout = QVBoxLayout()
         type_label = QLabel("Proton Type:")
         type_combo = QComboBox()
-        type_combo.addItems(['GE', 'Official', 'Custom'])
+        type_combo.addItems(['GE', 'Official', 'Experimental', 'Custom'])
         layout.addWidget(type_label)
         layout.addWidget(type_combo)
         version_widget = QWidget()
@@ -335,8 +497,10 @@ class MainWindow(QMainWindow):
                 custom_widget.setVisible(False)
                 if text == 'GE':
                     available = self.proton_manager.get_available_ge()
-                else:
-                    available = self.proton_manager.get_available_official()
+                elif text == 'Official':
+                    available = self.proton_manager.get_available_official(stable=True)
+                elif text == 'Experimental':
+                    available = self.proton_manager.get_available_official(stable=False)
                 version_combo.clear()
                 version_combo.addItems(available or ["No versions available"])
         type_combo.currentTextChanged.connect(update_ui)
@@ -367,38 +531,26 @@ class MainWindow(QMainWindow):
             progress = QProgressDialog(f"Installing {proton_type} Proton...", "Cancel", 0, 100, self)
             progress.setWindowModality(Qt.WindowModal)
             progress.setAutoClose(True)
-            def update_progress(stage, value, total):
-                progress.setLabelText(f"{stage}...")
-                if total:
-                    progress.setValue(int(value * 100 / total))
-                if progress.wasCanceled():
-                    raise Exception("Installation canceled")
-            success, message = False, "Unknown error"
-            try:
-                if proton_type == 'GE':
-                    version = version_combo.currentText()
-                    success, message = self.proton_manager.install_proton(version, 'GE', update_progress)
-                elif proton_type == 'Official':
-                    version = version_combo.currentText()
-                    success, message = self.proton_manager.install_proton(version, 'Official', update_progress)
-                elif proton_type == 'Custom':
-                    path = path_edit.text()
-                    version = name_edit.text()
-                    if not version or not path:
-                        QMessageBox.warning(self, 'Error', 'Name and Path required')
-                        return
-                    if custom_type_combo.currentText() == 'Tar.gz File':
-                        success, message = self.proton_manager.install_custom_tar(path, version, update_progress)
-                    else:
-                        success, message = self.proton_manager.install_custom_folder(path, version)
-                progress.setValue(100)
-            except Exception as e:
-                success, message = False, str(e)
-            if success:
-                QMessageBox.information(self, 'Success', f'Proton {version} installed')
-            else:
-                QMessageBox.warning(self, 'Error', f'Failed to install Proton {version}: {message}')
-            self.load_protons()
+            version = version_combo.currentText() if proton_type != 'Custom' else name_edit.text()
+            custom_path = path_edit.text() if proton_type == 'Custom' else None
+            custom_type = custom_type_combo.currentText() if proton_type == 'Custom' else None
+            if proton_type == 'Custom' and (not version or not custom_path):
+                QMessageBox.warning(self, 'Error', 'Name and Path required')
+                return
+            thread = InstallThread(self.proton_manager, version, proton_type, custom_path, custom_type)
+            thread.update_progress.connect(lambda stage, value, total: progress.setLabelText(stage) or progress.setValue(int(value * 100 / total) if total else 0))
+            thread.finished.connect(lambda success, message: self.install_finished(success, message, version, progress))
+            thread.start()
+            progress.canceled.connect(thread.terminate)
+
+    def install_finished(self, success, message, version, progress):
+        progress.setValue(100)
+        if success:
+            QMessageBox.information(self, 'Success', f'Proton {version} installed')
+        else:
+            QMessageBox.warning(self, 'Error', f'Failed to install Proton {version}: {message}')
+        self.start_proton_loading()
+
     def update_proton(self):
         selected = self.protons_table.currentRow()
         if selected < 0:
@@ -411,25 +563,27 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, 'Info', 'No update available or not supported')
             return
         new_type, new_version = update_info
+        reply = QMessageBox.question(self, 'Update', f'Update to {new_version} ({new_type})?', QMessageBox.Yes | QMessageBox.No)
+        if reply == QMessageBox.No:
+            return
         progress = QProgressDialog(f"Updating {proton_type} Proton to {new_version}...", "Cancel", 0, 100, self)
         progress.setWindowModality(Qt.WindowModal)
         progress.setAutoClose(True)
-        def update_progress(stage, value, total):
-            progress.setLabelText(f"{stage}...")
-            if total:
-                progress.setValue(int(value * 100 / total))
-            if progress.wasCanceled():
-                raise Exception("Update canceled")
-        try:
-            success, message = self.proton_manager.install_proton(new_version, new_type, update_progress)
-            if success:
-                self.proton_manager.remove_proton(version)
-                QMessageBox.information(self, 'Success', f'Updated to {new_version}')
-            else:
-                QMessageBox.warning(self, 'Error', f'Failed to update to {new_version}: {message}')
-        except Exception as e:
-            QMessageBox.warning(self, 'Error', f'Failed to update to {new_version}: {str(e)}')
-        self.load_protons()
+        thread = InstallThread(self.proton_manager, new_version, new_type)
+        thread.update_progress.connect(lambda stage, value, total: progress.setLabelText(stage) or progress.setValue(int(value * 100 / total) if total else 0))
+        thread.finished.connect(lambda success, message: self.update_finished(success, message, new_version, version, progress))
+        thread.start()
+        progress.canceled.connect(thread.terminate)
+
+    def update_finished(self, success, message, new_version, old_version, progress):
+        progress.setValue(100)
+        if success:
+            self.proton_manager.remove_proton(old_version)
+            QMessageBox.information(self, 'Success', f'Updated to {new_version}')
+        else:
+            QMessageBox.warning(self, 'Error', f'Failed to update to {new_version}: {message}')
+        self.start_proton_loading()
+
     def remove_proton(self):
         selected = self.protons_table.currentRow()
         if selected < 0:
@@ -442,4 +596,4 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, 'Success', f'{version} removed')
             else:
                 QMessageBox.warning(self, 'Error', f'Failed to remove {version}')
-            self.load_protons()
+            self.start_proton_loading()
