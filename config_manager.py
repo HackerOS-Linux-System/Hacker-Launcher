@@ -1,3 +1,4 @@
+# config_manager.py
 import os
 import json
 import logging
@@ -71,3 +72,4 @@ class ConfigManager:
     def save_settings(self, settings):
         with open(self.settings_file, 'w') as f:
             json.dump(settings, f, indent=4)
+
