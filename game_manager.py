@@ -24,37 +24,47 @@ class GameManager:
     def launch_game(self, game, gamescope=False):
         runner = game['runner']
         exe = game['exe']
-        if not os.path.exists(exe) and runner != 'Steam':
-            raise Exception(f"Executable does not exist: {exe}")
+        app_id = game.get('app_id', '')
+        prefix = game.get('prefix', '')
         launch_options = game.get('launch_options', '').split()
         env = os.environ.copy()
-        prefix = game.get('prefix', '')
-        if runner in ['Wine', 'Proton']:
+
+        # Validate inputs
+        if runner != 'Steam' and not os.path.exists(exe):
+            raise Exception(f"Executable does not exist: {exe}")
+        if runner == 'Steam' and not app_id:
+            raise Exception("Steam App ID not set")
+
+        # Set up environment for Wine/Proton
+        if runner in ['Wine'] or 'Proton' in runner:
             if not prefix:
                 raise Exception("Prefix not set for Wine/Proton runner")
-            # Ensure prefix is writable by the current user
             try:
                 os.makedirs(prefix, exist_ok=True)
-                # Fix ownership if running as root (optional, for robustness)
-                if os.geteuid() == 0:  # Running as root
+                # Fix ownership if running as root
+                if os.geteuid() == 0:
                     user_id = os.getuid()
                     group_id = os.getgid()
                     subprocess.run(['chown', '-R', f'{user_id}:{group_id}', prefix], check=True)
+                    # Ensure protonfixes directory is accessible
+                    protonfixes_dir = os.path.expanduser('~/.config/protonfixes')
+                    os.makedirs(protonfixes_dir, exist_ok=True)
+                    subprocess.run(['chown', '-R', f'{user_id}:{group_id}', protonfixes_dir], check=True)
             except Exception as e:
-                raise Exception(f"Failed to set up prefix {prefix}: {e}")
+                raise Exception(f"Failed to set up prefix or protonfixes: {e}")
             env['WINEPREFIX'] = prefix
             if game.get('enable_dxvk', False):
                 env['WINEDLLOVERRIDES'] = 'd3d11=n,b;dxgi=n,b'
-            # Per-game overrides if set, else global
             env['WINEESYNC'] = '1' if game.get('enable_esync', self.config_manager.load_settings()['enable_esync']) else '0'
             env['WINEFSYNC'] = '1' if game.get('enable_fsync', self.config_manager.load_settings()['enable_fsync']) else '0'
             env['DXVK_ASYNC'] = '1' if game.get('enable_dxvk_async', self.config_manager.load_settings()['enable_dxvk_async']) else '0'
+
+        # Build command
         cmd = []
         if gamescope:
             if not shutil.which('gamescope'):
-                raise Exception("Gamescope is not installed. Please install it via your package manager (e.g., apt, dnf, pacman).")
+                raise Exception("Gamescope is not installed. Please install it via your package manager (e.g., dnf install gamescope).")
             cmd = ['gamescope']
-            # Expanded Gamescope options without duplication
             options_to_remove = []
             if '--adaptive-sync' in launch_options:
                 cmd.append('--adaptive-sync')
@@ -82,47 +92,40 @@ class GameManager:
                 if opt in launch_options:
                     launch_options.remove(opt)
             cmd.append('--')
+
         try:
             if runner == 'Native':
                 cmd.extend([exe] + launch_options)
             elif runner == 'Wine':
+                if not shutil.which('wine'):
+                    raise Exception("Wine not installed. Please install it (e.g., dnf install wine).")
                 cmd.extend(['wine', exe] + launch_options)
             elif runner == 'Flatpak':
                 if not shutil.which('flatpak'):
-                    raise Exception("Flatpak not installed.")
+                    raise Exception("Flatpak not installed. Please install it (e.g., dnf install flatpak).")
                 cmd.extend(['flatpak', 'run', exe] + launch_options)
-            elif runner == 'Snap':
-                if not shutil.which('snap'):
-                    raise Exception("Snap not installed.")
-                cmd.extend(['snap', 'run', exe] + launch_options)
             elif runner == 'Steam':
-                app_id = game.get('app_id', '')
-                if not app_id:
-                    raise Exception("Steam App ID not set.")
+                if not shutil.which('steam') and not shutil.which('flatpak'):
+                    raise Exception("Steam or Flatpak not installed. Please install Steam (e.g., flatpak install flathub com.valvesoftware.Steam).")
                 cmd.extend(['steam', '-applaunch', app_id] + launch_options)
             else:  # Proton
                 proton_path = self.proton_manager.get_proton_path(runner)
                 if not os.path.exists(proton_path):
                     raise Exception(f"Proton binary not found for {runner}")
+                # Proton runs standalone, no Steam dependency
                 env['STEAM_COMPAT_DATA_PATH'] = prefix
-                # Set STEAM_COMPAT_CLIENT_INSTALL_PATH
-                steam_dir = os.path.expanduser('~/.steam/steam')
-                if not os.path.exists(steam_dir):
-                    steam_dir = os.path.expanduser('~/.local/share/Steam')
-                if not os.path.exists(steam_dir):
-                    # Try Flatpak Steam
-                    steam_dir = os.path.expanduser('~/.var/app/com.valvesoftware.Steam/data/Steam')
-                if not os.path.exists(steam_dir):
-                    raise Exception("Steam installation not found. Please ensure Steam is installed.")
-                env['STEAM_COMPAT_CLIENT_INSTALL_PATH'] = steam_dir
+                # Set a dummy STEAM_COMPAT_CLIENT_INSTALL_PATH to avoid KeyError
+                env['STEAM_COMPAT_CLIENT_INSTALL_PATH'] = os.path.expanduser('~/.hackeros/Hacker-Launcher')
                 cmd.extend([proton_path, 'run', exe] + launch_options)
-                # Additional Proton fallbacks
+                # Fallback for GE-Proton
                 if 'GE-Proton' in runner:
                     try:
                         subprocess.Popen(cmd, env=env)
                         return
                     except:
                         cmd = [proton_path, 'waitforexitandrun', exe] + launch_options
+
+            # Execute command
             log_file = os.path.join(self.config_manager.logs_dir, f"{game['name'].replace(' ', '_')}.log")
             with open(log_file, 'w') as f:
                 process = subprocess.Popen(cmd, env=env, stdout=f, stderr=f)
