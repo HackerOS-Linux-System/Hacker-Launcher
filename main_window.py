@@ -1,4 +1,3 @@
-# main_window.py
 from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem, QPushButton, QTabWidget, QComboBox, QLineEdit, QLabel, QMessageBox, QFileDialog, QDialog, QGridLayout, QProgressDialog, QCheckBox, QTextEdit
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QIcon
@@ -13,7 +12,6 @@ from config_manager import ConfigManager
 class InstallThread(QThread):
     update_progress = Signal(str, int, int)
     finished = Signal(bool, str)
-
     def __init__(self, manager, version, proton_type, custom_path=None, custom_type=None):
         super().__init__()
         self.manager = manager
@@ -21,7 +19,6 @@ class InstallThread(QThread):
         self.proton_type = proton_type
         self.custom_path = custom_path
         self.custom_type = custom_type
-
     def run(self):
         def progress_callback(stage, value, total):
             self.update_progress.emit(stage, value, total)
@@ -39,17 +36,16 @@ class InstallThread(QThread):
 
 class LoadProtonsThread(QThread):
     protons_loaded = Signal(list)
-
     def __init__(self, manager):
         super().__init__()
         self.manager = manager
-
     def run(self):
         try:
             protons = self.manager.get_installed_protons()
             self.protons_loaded.emit(protons)
         except Exception as e:
             logging.error(f"Error loading protons: {e}")
+            print(f"Error loading protons: {e}")
             self.protons_loaded.emit([])
 
 class MainWindow(QMainWindow):
@@ -61,7 +57,7 @@ class MainWindow(QMainWindow):
         self.proton_manager = ProtonManager()
         self.game_manager = GameManager(self.proton_manager)
         self.games = []
-        self.settings = self.config_manager.load_settings()
+        self.settings = self.config_manager.settings  # Use stored settings
         self.apply_fullscreen()
         self.setup_ui()
         self.load_games()
@@ -421,6 +417,7 @@ class MainWindow(QMainWindow):
                 self.game_manager.launch_game(game, '--gamescope' in game.get('launch_options', ''))
             except Exception as e:
                 logging.error(f"Error launching {name}: {e}")
+                print(f"Error launching {name}: {e}")
                 QMessageBox.warning(self, 'Error', str(e))
 
     def remove_game(self):
@@ -622,3 +619,4 @@ class MainWindow(QMainWindow):
             else:
                 QMessageBox.warning(self, 'Error', f'Failed to remove {version}')
             self.start_proton_loading()
+
