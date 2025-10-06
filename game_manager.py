@@ -41,12 +41,11 @@ class GameManager:
                 raise Exception("Prefix not set for Wine/Proton runner")
             try:
                 os.makedirs(prefix, exist_ok=True)
-                # Fix ownership if running as root
-                if os.geteuid() == 0:
-                    user_id = os.getuid()
-                    group_id = os.getgid()
+                # Fix ownership if running as root with sudo
+                if os.geteuid() == 0 and 'SUDO_UID' in os.environ:
+                    user_id = os.environ['SUDO_UID']
+                    group_id = os.environ['SUDO_GID']
                     subprocess.run(['chown', '-R', f'{user_id}:{group_id}', prefix], check=True)
-                    # Ensure protonfixes directory is accessible
                     protonfixes_dir = os.path.expanduser('~/.config/protonfixes')
                     os.makedirs(protonfixes_dir, exist_ok=True)
                     subprocess.run(['chown', '-R', f'{user_id}:{group_id}', protonfixes_dir], check=True)
@@ -55,9 +54,9 @@ class GameManager:
             env['WINEPREFIX'] = prefix
             if game.get('enable_dxvk', False):
                 env['WINEDLLOVERRIDES'] = 'd3d11=n,b;dxgi=n,b'
-            env['WINEESYNC'] = '1' if game.get('enable_esync', self.config_manager.load_settings()['enable_esync']) else '0'
-            env['WINEFSYNC'] = '1' if game.get('enable_fsync', self.config_manager.load_settings()['enable_fsync']) else '0'
-            env['DXVK_ASYNC'] = '1' if game.get('enable_dxvk_async', self.config_manager.load_settings()['enable_dxvk_async']) else '0'
+            env['WINEESYNC'] = '1' if game.get('enable_esync', self.config_manager.settings['enable_esync']) else '0'
+            env['WINEFSYNC'] = '1' if game.get('enable_fsync', self.config_manager.settings['enable_fsync']) else '0'
+            env['DXVK_ASYNC'] = '1' if game.get('enable_dxvk_async', self.config_manager.settings['enable_dxvk_async']) else '0'
 
         # Build command
         cmd = []
@@ -88,9 +87,8 @@ class GameManager:
             if '--bigpicture' in launch_options:
                 cmd.extend(['-e', '-f'])
                 options_to_remove.append('--bigpicture')
-            for opt in options_to_remove:
-                if opt in launch_options:
-                    launch_options.remove(opt)
+            # Remove processed options
+            launch_options = [opt for opt in launch_options if opt not in options_to_remove]
             cmd.append('--')
 
         try:
@@ -105,25 +103,25 @@ class GameManager:
                     raise Exception("Flatpak not installed. Please install it (e.g., dnf install flatpak).")
                 cmd.extend(['flatpak', 'run', exe] + launch_options)
             elif runner == 'Steam':
-                if not shutil.which('steam') and not shutil.which('flatpak'):
+                if shutil.which('flatpak') and not shutil.which('steam'):
+                    cmd.extend(['flatpak', 'run', 'com.valvesoftware.Steam', '-applaunch', app_id] + launch_options)
+                elif shutil.which('steam'):
+                    cmd.extend(['steam', '-applaunch', app_id] + launch_options)
+                else:
                     raise Exception("Steam or Flatpak not installed. Please install Steam (e.g., flatpak install flathub com.valvesoftware.Steam).")
-                cmd.extend(['steam', '-applaunch', app_id] + launch_options)
             else:  # Proton
-                proton_path = self.proton_manager.get_proton_path(runner)
-                if not os.path.exists(proton_path):
+                proton_bin = self.proton_manager.get_proton_path(runner)
+                if not os.path.exists(proton_bin):
                     raise Exception(f"Proton binary not found for {runner}")
-                # Proton runs standalone, no Steam dependency
+                # Set up Steam environment for Proton
+                steam_dir = os.path.expanduser('~/.local/share/Steam')
+                os.makedirs(os.path.join(steam_dir, 'steamapps/compatdata'), exist_ok=True)  # Ensure Steam structure
+                env['STEAM_COMPAT_CLIENT_INSTALL_PATH'] = steam_dir
                 env['STEAM_COMPAT_DATA_PATH'] = prefix
-                # Set a dummy STEAM_COMPAT_CLIENT_INSTALL_PATH to avoid KeyError
-                env['STEAM_COMPAT_CLIENT_INSTALL_PATH'] = os.path.expanduser('~/.hackeros/Hacker-Launcher')
-                cmd.extend([proton_path, 'run', exe] + launch_options)
-                # Fallback for GE-Proton
-                if 'GE-Proton' in runner:
-                    try:
-                        subprocess.Popen(cmd, env=env)
-                        return
-                    except:
-                        cmd = [proton_path, 'waitforexitandrun', exe] + launch_options
+                env['STEAM_RUNTIME'] = os.path.join(steam_dir, 'ubuntu12_32/steam-runtime')
+                ld_library_path = os.path.join(steam_dir, 'ubuntu12_32') + ':' + os.path.join(steam_dir, 'ubuntu12_64')
+                env['LD_LIBRARY_PATH'] = ld_library_path + ':' + env.get('LD_LIBRARY_PATH', '')
+                cmd.extend([proton_bin, 'waitforexitandrun', exe] + launch_options)
 
             # Execute command
             log_file = os.path.join(self.config_manager.logs_dir, f"{game['name'].replace(' ', '_')}.log")
@@ -132,4 +130,5 @@ class GameManager:
             logging.info(f"Launched game: {game['name']} with cmd: {' '.join(cmd)}")
         except Exception as e:
             logging.error(f"Failed to launch {game['name']}: {e}")
+            print(f"Error launching {game['name']}: {e}")
             raise
