@@ -1,8 +1,6 @@
-# config_manager.py
 import os
 import json
 import logging
-from jsonschema import validate, ValidationError  # Assuming jsonschema is available or install if needed, but per tools, no install, so skip or use simple validation
 
 class ConfigManager:
     base_dir = os.path.join(os.path.expanduser('~'), '.hackeros', 'Hacker-Launcher')
@@ -19,13 +17,13 @@ class ConfigManager:
         os.makedirs(self.protons_dir, exist_ok=True)
         os.makedirs(self.logs_dir, exist_ok=True)
         self.setup_logging()
-        self.load_settings()
+        self.settings = self.load_settings()  # Store settings in instance variable
 
     def setup_logging(self):
         logging.basicConfig(
             filename=os.path.join(self.logs_dir, 'launcher.log'),
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s'
+            level=logging.DEBUG,  # Changed to DEBUG for more details
+            format='%(asctime)s [%(levelname)s] %(message)s'
         )
 
     def load_games(self):
@@ -40,6 +38,7 @@ class ConfigManager:
                 return games
             except (json.JSONDecodeError, IOError, ValueError) as e:
                 logging.error(f"Error loading games.json: {e}")
+                print(f"Error loading games.json: {e}")  # Add console output
                 return []
         return []
 
@@ -66,10 +65,9 @@ class ConfigManager:
                 default_settings.update(settings)
             except (json.JSONDecodeError, IOError, ValueError) as e:
                 logging.error(f"Error loading settings.json: {e}")
-        # Only save if changed, but for simplicity, save once at load if needed
+                print(f"Error loading settings.json: {e}")  # Add console output
         return default_settings
 
     def save_settings(self, settings):
         with open(self.settings_file, 'w') as f:
             json.dump(settings, f, indent=4)
-
