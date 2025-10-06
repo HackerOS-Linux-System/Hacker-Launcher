@@ -1,4 +1,3 @@
-# proton_manager.py
 import requests
 import json
 import tarfile
@@ -42,19 +41,12 @@ class ProtonManager:
 
     def get_proton_path(self, version):
         base = os.path.join(self.protons_dir, version)
-        possible_paths = [
-            os.path.join(base, 'proton'),
-            os.path.join(base, 'dist', 'bin', 'proton'),
-            os.path.join(base, 'bin', 'proton'),
-            os.path.join(base, 'proton-run')
-        ]
-        for path in possible_paths:
-            if os.path.exists(path):
-                return path
+        for root, dirs, files in os.walk(base):
+            if 'proton' in files:
+                return os.path.join(root, 'proton')
         raise Exception(f"Proton binary not found in {version}")
 
     def _version_key(self, version):
-        # Improved version sorting: handle numbers and non-numbers, including decimals
         version = version.replace('GE-Proton', '').replace('Proton-', '')
         parts = []
         current = ''
@@ -71,7 +63,6 @@ class ProtonManager:
                 current += char
         if current:
             parts.append(current)
-        # Convert parts: numbers to float (for decimals like 10.0), others as strings
         def convert_part(part):
             try:
                 return float(part) if '.' in part else int(part)
@@ -85,7 +76,7 @@ class ProtonManager:
         for attempt in range(3):
             try:
                 url = 'https://api.github.com/repos/GloriousEggroll/proton-ge-custom/releases'
-                response = requests.get(url, timeout=15)  # Increased timeout
+                response = requests.get(url, timeout=15)
                 response.raise_for_status()
                 releases = json.loads(response.text)
                 tags = [r['tag_name'] for r in releases if 'tag_name' in r and r['tag_name'].startswith('GE-Proton')]
@@ -94,8 +85,10 @@ class ProtonManager:
                 return tags
             except Exception as e:
                 logging.error(f"Error fetching GE protons (attempt {attempt+1}/3): {e}")
-                time.sleep(3)  # Slightly longer delay
+                print(f"Error fetching GE protons (attempt {attempt+1}/3): {e}")
+                time.sleep(3)
         logging.warning("Failed to fetch GE protons after retries, returning empty list")
+        print("Failed to fetch GE protons after retries, returning empty list")
         self.available_ge_cache = []
         return []
 
@@ -107,7 +100,7 @@ class ProtonManager:
         for attempt in range(3):
             try:
                 url = 'https://api.github.com/repos/ValveSoftware/Proton/releases'
-                response = requests.get(url, timeout=15)  # Increased timeout
+                response = requests.get(url, timeout=15)
                 response.raise_for_status()
                 releases = json.loads(response.text)
                 filtered = [r['tag_name'] for r in releases if 'tag_name' in r]
@@ -123,8 +116,10 @@ class ProtonManager:
                 return filtered
             except Exception as e:
                 logging.error(f"Error fetching official protons (attempt {attempt+1}/3): {e}")
+                print(f"Error fetching official protons (attempt {attempt+1}/3): {e}")
                 time.sleep(3)
         logging.warning(f"Failed to fetch {'stable' if stable else 'experimental'} official protons after retries, returning empty list")
+        print(f"Failed to fetch {'stable' if stable else 'experimental'} official protons after retries, returning empty list")
         if stable:
             self.available_official_stable_cache = []
         else:
@@ -141,11 +136,13 @@ class ProtonManager:
             selected_release = next((r for r in releases if r['tag_name'] == version), None)
             if not selected_release:
                 logging.error(f"No release found for {version}")
+                print(f"No release found for {version}")
                 return False, f"No release found for {version}"
             assets = selected_release['assets']
             tar_asset = next((a for a in assets if a['name'].endswith('.tar.gz')), None)
             if not tar_asset:
                 logging.error(f"No tar.gz asset found for {version}")
+                print(f"No tar.gz asset found for {version}")
                 return False, f"No tar.gz asset found for {version}"
             dl_url = tar_asset['browser_download_url']
             progress_callback("Downloading", 0, 100)
@@ -193,6 +190,7 @@ class ProtonManager:
             return True, "Success"
         except Exception as e:
             logging.error(f"Error installing {proton_type} proton {version}: {e}")
+            print(f"Error installing {proton_type} proton {version}: {e}")
             return False, str(e)
 
     def install_custom_tar(self, tar_path, version, progress_callback=None):
@@ -226,6 +224,7 @@ class ProtonManager:
             return True, "Success"
         except Exception as e:
             logging.error(f"Error installing custom tar: {e}")
+            print(f"Error installing custom tar: {e}")
             return False, str(e)
 
     def install_custom_folder(self, src_folder, version):
@@ -239,6 +238,7 @@ class ProtonManager:
             return True, "Success"
         except Exception as e:
             logging.error(f"Error installing custom folder: {e}")
+            print(f"Error installing custom folder: {e}")
             return False, str(e)
 
     def remove_proton(self, version):
@@ -251,6 +251,7 @@ class ProtonManager:
             return True
         except Exception as e:
             logging.error(f"Error removing proton: {e}")
+            print(f"Error removing proton: {e}")
             return False
 
     def check_update(self, version, proton_type):
