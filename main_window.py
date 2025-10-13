@@ -619,4 +619,3 @@ class MainWindow(QMainWindow):
             else:
                 QMessageBox.warning(self, 'Error', f'Failed to remove {version}')
             self.start_proton_loading()
-
