@@ -210,7 +210,7 @@ class MainWindow(QMainWindow):
         about_layout = QVBoxLayout(about_widget)
         about_text = QTextEdit()
         about_text.setReadOnly(True)
-        about_text.setText("Hacker Launcher v1.0\nGitHub: https://github.com/your-repo\nA launcher for running games with Proton/Wine easily.")
+        about_text.setText("Hacker Launcher v1.0\nGitHub: https://github.com/HackerOS-Linux-System/Hacker-Launcher\nA launcher for running games with Proton/Wine easily.")
         about_layout.addWidget(about_text)
         tabs.addTab(about_widget, 'About')
         layout.addWidget(tabs)
