@@ -145,7 +145,8 @@ class ProtonManager:
                 print(f"No tar.gz asset found for {version}")
                 return False, f"No tar.gz asset found for {version}"
             dl_url = tar_asset['browser_download_url']
-            progress_callback("Downloading", 0, 100)
+            if progress_callback:
+                progress_callback("Downloading", 0, 100)
             with tempfile.NamedTemporaryFile(suffix='.tar.gz', delete=False) as temp_tar:
                 response = requests.get(dl_url, stream=True, timeout=30)
                 response.raise_for_status()
@@ -160,7 +161,8 @@ class ProtonManager:
                             if progress_callback and total_size:
                                 progress_callback("Downloading", downloaded, total_size)
                 temp_tar_path = temp_tar.name
-            progress_callback("Extracting", 0, 100)
+            if progress_callback:
+                progress_callback("Extracting", 0, 100)
             extract_dir = os.path.join(self.protons_dir, version)
             os.makedirs(extract_dir, exist_ok=True)
             with tarfile.open(temp_tar_path) as tar:
@@ -191,13 +193,18 @@ class ProtonManager:
         except Exception as e:
             logging.error(f"Error installing {proton_type} proton {version}: {e}")
             print(f"Error installing {proton_type} proton {version}: {e}")
+            if 'extract_dir' in locals():
+                shutil.rmtree(extract_dir, ignore_errors=True)
+            if 'temp_tar_path' in locals() and os.path.exists(temp_tar_path):
+                os.remove(temp_tar_path)
             return False, str(e)
 
     def install_custom_tar(self, tar_path, version, progress_callback=None):
         try:
             extract_dir = os.path.join(self.protons_dir, version)
             os.makedirs(extract_dir, exist_ok=True)
-            progress_callback("Extracting", 0, 100)
+            if progress_callback:
+                progress_callback("Extracting", 0, 100)
             with tarfile.open(tar_path) as tar:
                 for member in tar.getmembers():
                     member_path = os.path.join(extract_dir, member.name)
@@ -225,6 +232,8 @@ class ProtonManager:
         except Exception as e:
             logging.error(f"Error installing custom tar: {e}")
             print(f"Error installing custom tar: {e}")
+            if 'extract_dir' in locals():
+                shutil.rmtree(extract_dir, ignore_errors=True)
             return False, str(e)
 
     def install_custom_folder(self, src_folder, version):
@@ -239,6 +248,8 @@ class ProtonManager:
         except Exception as e:
             logging.error(f"Error installing custom folder: {e}")
             print(f"Error installing custom folder: {e}")
+            if 'dest' in locals():
+                shutil.rmtree(dest, ignore_errors=True)
             return False, str(e)
 
     def remove_proton(self, version):
