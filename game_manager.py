@@ -28,6 +28,7 @@ class GameManager:
         prefix = game.get('prefix', '')
         launch_options = game.get('launch_options', '').split()
         env = os.environ.copy()
+        fps_limit = game.get('fps_limit', '')
 
         # Validate inputs
         if runner != 'Steam' and not os.path.exists(exe):
@@ -57,6 +58,8 @@ class GameManager:
             env['WINEESYNC'] = '1' if game.get('enable_esync', self.config_manager.settings['enable_esync']) else '0'
             env['WINEFSYNC'] = '1' if game.get('enable_fsync', self.config_manager.settings['enable_fsync']) else '0'
             env['DXVK_ASYNC'] = '1' if game.get('enable_dxvk_async', self.config_manager.settings['enable_dxvk_async']) else '0'
+            if fps_limit:
+                env['DXVK_FRAME_RATE'] = fps_limit
 
         # Build command
         cmd = []
