@@ -27,8 +27,8 @@ class GameManager:
         app_id = game.get('app_id', '')
         prefix = game.get('prefix', '')
         launch_options = game.get('launch_options', '').split()
-        env = os.environ.copy()
         fps_limit = game.get('fps_limit', '')
+        env = os.environ.copy()
 
         # Validate inputs
         if runner != 'Steam' and not os.path.exists(exe):
@@ -58,8 +58,6 @@ class GameManager:
             env['WINEESYNC'] = '1' if game.get('enable_esync', self.config_manager.settings['enable_esync']) else '0'
             env['WINEFSYNC'] = '1' if game.get('enable_fsync', self.config_manager.settings['enable_fsync']) else '0'
             env['DXVK_ASYNC'] = '1' if game.get('enable_dxvk_async', self.config_manager.settings['enable_dxvk_async']) else '0'
-            if fps_limit:
-                env['DXVK_FRAME_RATE'] = fps_limit
 
         # Build command
         cmd = []
@@ -90,6 +88,9 @@ class GameManager:
             if '--bigpicture' in launch_options:
                 cmd.extend(['-e', '-f'])
                 options_to_remove.append('--bigpicture')
+            if fps_limit:
+                cmd.append('-r')
+                cmd.append(str(fps_limit))
             # Remove processed options
             launch_options = [opt for opt in launch_options if opt not in options_to_remove]
             cmd.append('--')
