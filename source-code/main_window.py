@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem, QPushButton, QTabWidget, QComboBox, QLineEdit, QLabel, QMessageBox, QFileDialog, QDialog, QGridLayout, QProgressDialog, QCheckBox, QTextEdit
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QIcon, QCloseEvent
 import os
 import subprocess
 import shutil
@@ -8,9 +8,6 @@ import logging
 from proton_manager import ProtonManager
 from game_manager import GameManager
 from config_manager import ConfigManager
-
-class CancelledError(Exception):
-    pass
 
 class InstallThread(QThread):
     update_progress = Signal(str, int, int)
@@ -23,17 +20,10 @@ class InstallThread(QThread):
         self.proton_type = proton_type
         self.custom_path = custom_path
         self.custom_type = custom_type
-        self._is_canceled = False
-
-    def cancel(self):
-        self._is_canceled = True
 
     def run(self):
         def progress_callback(stage, value, total):
             self.update_progress.emit(stage, value, total)
-            if self._is_canceled:
-                raise CancelledError("Installation cancelled")
-
         try:
             if self.proton_type in ['GE', 'Official', 'Experimental']:
                 success, message = self.manager.install_proton(self.version, self.proton_type if self.proton_type != 'Experimental' else 'Official', progress_callback)
@@ -43,8 +33,6 @@ class InstallThread(QThread):
                 else:
                     success, message = self.manager.install_custom_folder(self.custom_path, self.version)
             self.finished.emit(success, message)
-        except CancelledError as e:
-            self.finished.emit(False, str(e))
         except Exception as e:
             self.finished.emit(False, str(e))
 
@@ -79,6 +67,20 @@ class MainWindow(QMainWindow):
         self.load_games()
         self.start_proton_loading()
 
+    def closeEvent(self, event: QCloseEvent):
+        threads = []
+        if hasattr(self, 'proton_thread') and self.proton_thread.isRunning():
+            threads.append(self.proton_thread)
+        if hasattr(self, 'install_thread') and self.install_thread.isRunning():
+            threads.append(self.install_thread)
+        if hasattr(self, 'update_thread') and self.update_thread.isRunning():
+            threads.append(self.update_thread)
+        for thread in threads:
+            thread.requestInterruption()
+            thread.quit()
+            thread.wait()
+        super().closeEvent(event)
+
     def apply_fullscreen(self):
         if self.settings['fullscreen']:
             self.showFullScreen()
@@ -110,7 +112,7 @@ class MainWindow(QMainWindow):
         remove_btn.setToolTip("Remove the selected game")
         config_btn = QPushButton(QIcon.fromTheme("configure"), 'Configure Game')
         config_btn.clicked.connect(self.configure_game)
-        config_btn.setToolTip("Configure Wine/Proton for the selected game")
+        config_btn.setToolTip("Edit the selected game's configuration")
         buttons_layout.addWidget(add_btn)
         buttons_layout.addWidget(launch_btn)
         buttons_layout.addWidget(remove_btn)
@@ -226,7 +228,7 @@ class MainWindow(QMainWindow):
         about_layout = QVBoxLayout(about_widget)
         about_text = QTextEdit()
         about_text.setReadOnly(True)
-        about_text.setText("Hacker Launcher v1.0\nGitHub: https://github.com/HackerOS-Linux-System/Hacker-Launcher\nA launcher for running games with Proton/Wine easily.")
+        about_text.setText("Hacker Launcher v0.5\nGitHub: https://github.com/HackerOS-Linux-System/Hacker-Launcher/nA launcher for running games with Proton/Wine easily.")
         about_layout.addWidget(about_text)
         tabs.addTab(about_widget, 'About')
         layout.addWidget(tabs)
@@ -336,6 +338,12 @@ class MainWindow(QMainWindow):
         dlg_layout.addWidget(launch_label, row, 0)
         dlg_layout.addWidget(launch_edit, row, 1, 1, 2)
         row += 1
+        fps_label = QLabel('FPS Limit (for Gamescope):')
+        fps_edit = QLineEdit()
+        fps_edit.setPlaceholderText("e.g., 60 (only if --gamescope in launch options)")
+        dlg_layout.addWidget(fps_label, row, 0)
+        dlg_layout.addWidget(fps_edit, row, 1, 1, 2)
+        row += 1
         dxvk_check = QCheckBox("Enable DXVK/VKD3D")
         dxvk_check.setVisible(runner_combo.currentText() in ['Wine', 'Proton'])
         dlg_layout.addWidget(dxvk_check, row, 0)
@@ -361,12 +369,6 @@ class MainWindow(QMainWindow):
         app_id_widget.setLayout(app_id_layout)
         app_id_widget.setVisible(runner_combo.currentText() == 'Steam')
         dlg_layout.addWidget(app_id_widget, row, 0, 1, 3)
-        row += 1
-        fps_label = QLabel('FPS Limit:')
-        fps_edit = QLineEdit()
-        fps_edit.setPlaceholderText("Enter FPS limit (e.g., 60)")
-        dlg_layout.addWidget(fps_label, row, 0)
-        dlg_layout.addWidget(fps_edit, row, 1, 1, 2)
         row += 1
 
         def update_visibility(text):
@@ -396,13 +398,13 @@ class MainWindow(QMainWindow):
             exe = exe_edit.text()
             runner = runner_combo.currentText()
             launch_options = launch_edit.text()
+            fps_limit = fps_edit.text()
             enable_dxvk = dxvk_check.isChecked()
             enable_esync = esync_check.isChecked()
             enable_fsync = fsync_check.isChecked()
             enable_dxvk_async = dxvk_async_check.isChecked()
             app_id = app_id_edit.text() if runner == 'Steam' else ''
             prefix = prefix_edit.text() if runner in ['Wine', 'Proton'] else ''
-            fps_limit = fps_edit.text()
             if runner == 'Proton':
                 runner = proton_combo.currentText()
             if not name or (runner != 'Steam' and not exe) or (runner == 'Steam' and not app_id):
@@ -420,12 +422,12 @@ class MainWindow(QMainWindow):
                 'runner': runner,
                 'prefix': prefix,
                 'launch_options': launch_options,
+                'fps_limit': int(fps_limit) if fps_limit.isdigit() else '',
                 'enable_dxvk': enable_dxvk,
                 'enable_esync': enable_esync,
                 'enable_fsync': enable_fsync,
                 'enable_dxvk_async': enable_dxvk_async,
-                'app_id': app_id,
-                'fps_limit': fps_limit
+                'app_id': app_id
             }
             self.game_manager.add_game(game)
             self.load_games()
@@ -440,13 +442,8 @@ class MainWindow(QMainWindow):
         game = next((g for g in self.games if g['name'] == name), None)
         if game:
             try:
-                # Dodaj fps limit do launch_options jeśli gamescope jest używany
-                launch_options = game.get('launch_options', '').split()
-                fps_limit = game.get('fps_limit', '')
-                if fps_limit and '--gamescope' in launch_options:
-                    launch_options.append(f'--framerate-limit={fps_limit}')
-                game['launch_options'] = ' '.join(launch_options)
-                self.game_manager.launch_game(game, '--gamescope' in game.get('launch_options', ''))
+                gamescope_flag = '--gamescope' in game.get('launch_options', '')
+                self.game_manager.launch_game(game, gamescope_flag)
             except Exception as e:
                 logging.error(f"Error launching {name}: {e}")
                 print(f"Error launching {name}: {e}")
@@ -470,35 +467,31 @@ class MainWindow(QMainWindow):
         game = next((g for g in self.games if g['name'] == name), None)
         if not game:
             return
-        config_dialog = QDialog(self)
-        config_dialog.setWindowTitle("Configure Game")
+
+        edit_dialog = QDialog(self)
+        edit_dialog.setWindowTitle("Edit Game Configuration")
         dlg_layout = QGridLayout()
         row = 0
-        # Podstawowe pola
         name_label = QLabel('Game Name:')
         name_edit = QLineEdit(game['name'])
         dlg_layout.addWidget(name_label, row, 0)
         dlg_layout.addWidget(name_edit, row, 1, 1, 2)
         row += 1
-        exe_label = QLabel('Executable / App ID:')
-        exe_edit = QLineEdit(game['exe'])
-        browse_btn = QPushButton(QIcon.fromTheme("folder"), 'Browse')
-        browse_btn.clicked.connect(lambda: exe_edit.setText(QFileDialog.getOpenFileName(self, 'Select Executable', '/', 'Executables (*.exe *.bat);;All Files (*)')[0]))
-        dlg_layout.addWidget(exe_label, row, 0)
-        dlg_layout.addWidget(exe_edit, row, 1)
-        dlg_layout.addWidget(browse_btn, row, 2)
-        row += 1
         runner_label = QLabel('Runner:')
         runner_combo = QComboBox()
         runner_combo.addItems(['Native', 'Wine', 'Proton', 'Flatpak', 'Steam'])
-        runner_combo.setCurrentText('Proton' if 'Proton' in game['runner'] else game['runner'])
+        current_runner = game['runner']
+        if 'Proton' in current_runner:
+            runner_combo.setCurrentText('Proton')
+        else:
+            runner_combo.setCurrentText(current_runner)
         dlg_layout.addWidget(runner_label, row, 0)
         dlg_layout.addWidget(runner_combo, row, 1, 1, 2)
         row += 1
         proton_label = QLabel('Proton Version:')
         proton_combo = QComboBox()
         proton_combo.addItems([p['version'] for p in self.proton_manager.get_installed_protons()])
-        proton_combo.setCurrentText(game['runner'] if 'Proton' in game['runner'] else '')
+        proton_combo.setCurrentText(current_runner if 'Proton' in current_runner else '')
         proton_widget = QWidget()
         proton_layout = QHBoxLayout()
         proton_layout.addWidget(proton_label)
@@ -507,150 +500,42 @@ class MainWindow(QMainWindow):
         proton_widget.setVisible(runner_combo.currentText() == 'Proton')
         dlg_layout.addWidget(proton_widget, row, 0, 1, 3)
         row += 1
-        prefix_label = QLabel('Wine/Proton Prefix:')
-        prefix_edit = QLineEdit(game['prefix'])
-        prefix_browse_btn = QPushButton(QIcon.fromTheme("folder"), 'Browse')
-        prefix_browse_btn.clicked.connect(lambda: prefix_edit.setText(QFileDialog.getExistingDirectory(self, 'Select Prefix Directory')))
-        prefix_widget = QWidget()
-        prefix_layout = QHBoxLayout()
-        prefix_layout.addWidget(prefix_label)
-        prefix_layout.addWidget(prefix_edit)
-        prefix_layout.addWidget(prefix_browse_btn)
-        prefix_widget.setLayout(prefix_layout)
-        prefix_widget.setVisible(runner_combo.currentText() in ['Wine', 'Proton'])
-        dlg_layout.addWidget(prefix_widget, row, 0, 1, 3)
-        row += 1
-        launch_label = QLabel('Launch Options:')
-        launch_edit = QLineEdit(game.get('launch_options', ''))
-        dlg_layout.addWidget(launch_label, row, 0)
-        dlg_layout.addWidget(launch_edit, row, 1, 1, 2)
-        row += 1
-        dxvk_check = QCheckBox("Enable DXVK/VKD3D")
-        dxvk_check.setChecked(game.get('enable_dxvk', False))
-        dxvk_check.setVisible(runner_combo.currentText() in ['Wine', 'Proton'])
-        dlg_layout.addWidget(dxvk_check, row, 0)
-        row += 1
-        esync_check = QCheckBox("Enable Esync (Override)")
-        esync_check.setChecked(game.get('enable_esync', False))
-        esync_check.setVisible(runner_combo.currentText() in ['Wine', 'Proton'])
-        dlg_layout.addWidget(esync_check, row, 0)
-        row += 1
-        fsync_check = QCheckBox("Enable Fsync (Override)")
-        fsync_check.setChecked(game.get('enable_fsync', False))
-        fsync_check.setVisible(runner_combo.currentText() in ['Wine', 'Proton'])
-        dlg_layout.addWidget(fsync_check, row, 0)
-        row += 1
-        dxvk_async_check = QCheckBox("Enable DXVK Async (Override)")
-        dxvk_async_check.setChecked(game.get('enable_dxvk_async', False))
-        dxvk_async_check.setVisible(runner_combo.currentText() in ['Wine', 'Proton'])
-        dlg_layout.addWidget(dxvk_async_check, row, 0)
-        row += 1
-        app_id_widget = QWidget()
-        app_id_layout = QHBoxLayout()
-        app_id_label = QLabel('Steam App ID:')
-        app_id_edit = QLineEdit(game.get('app_id', ''))
-        app_id_layout.addWidget(app_id_label)
-        app_id_layout.addWidget(app_id_edit)
-        app_id_widget.setLayout(app_id_layout)
-        app_id_widget.setVisible(runner_combo.currentText() == 'Steam')
-        dlg_layout.addWidget(app_id_widget, row, 0, 1, 3)
-        row += 1
-        fps_label = QLabel('FPS Limit:')
-        fps_edit = QLineEdit(game.get('fps_limit', ''))
+        fps_label = QLabel('FPS Limit (for Gamescope):')
+        fps_edit = QLineEdit(str(game.get('fps_limit', '')))
         dlg_layout.addWidget(fps_label, row, 0)
         dlg_layout.addWidget(fps_edit, row, 1, 1, 2)
-        row += 1
-        # Sekcja winetricks
-        tricks_label = QLabel("Select libraries to install:")
-        tricks_list = QComboBox()
-        popular_tricks = ['dotnet48', 'vcrun2019', 'dxvk', 'vkd3d', 'corefonts', 'd3dcompiler_47', 'physx', 'msls31']
-        tricks_list.addItems(popular_tricks)
-        install_btn = QPushButton('Install Selected')
-        def install_trick():
-            trick = tricks_list.currentText()
-            prefix = prefix_edit.text()
-            env = os.environ.copy()
-            env['WINEPREFIX'] = prefix
-            try:
-                subprocess.run(['winetricks', '--unattended', trick], env=env, check=True)
-                QMessageBox.information(self, 'Success', f'{trick} installed')
-            except Exception as e:
-                QMessageBox.warning(self, 'Error', str(e))
-        install_btn.clicked.connect(install_trick)
-        dlg_layout.addWidget(tricks_label, row, 0)
-        dlg_layout.addWidget(tricks_list, row, 1)
-        dlg_layout.addWidget(install_btn, row, 2)
-        row += 1
-        winetricks_btn = QPushButton('Open Winetricks')
-        def open_winetricks():
-            prefix = prefix_edit.text()
-            env = os.environ.copy()
-            env['WINEPREFIX'] = prefix
-            subprocess.Popen(['winetricks'], env=env)
-        winetricks_btn.clicked.connect(open_winetricks)
-        dlg_layout.addWidget(winetricks_btn, row, 0, 1, 3)
         row += 1
 
         def update_visibility(text):
             proton_widget.setVisible(text == 'Proton')
-            prefix_widget.setVisible(text in ['Wine', 'Proton'])
-            app_id_widget.setVisible(text == 'Steam')
-            browse_btn.setVisible(text != 'Steam')
-            dxvk_check.setVisible(text in ['Wine', 'Proton'])
-            esync_check.setVisible(text in ['Wine', 'Proton'])
-            fsync_check.setVisible(text in ['Wine', 'Proton'])
-            dxvk_async_check.setVisible(text in ['Wine', 'Proton'])
 
         runner_combo.currentTextChanged.connect(update_visibility)
         button_layout = QHBoxLayout()
         ok_btn = QPushButton(QIcon.fromTheme("dialog-ok"), 'Save Changes')
         cancel_btn = QPushButton(QIcon.fromTheme("dialog-cancel"), 'Cancel')
-        ok_btn.clicked.connect(config_dialog.accept)
-        cancel_btn.clicked.connect(config_dialog.reject)
+        ok_btn.clicked.connect(edit_dialog.accept)
+        cancel_btn.clicked.connect(edit_dialog.reject)
         button_layout.addStretch()
         button_layout.addWidget(ok_btn)
         button_layout.addWidget(cancel_btn)
         dlg_layout.addLayout(button_layout, row, 0, 1, 3)
-        config_dialog.setLayout(dlg_layout)
-        config_dialog.resize(600, 600)
-        if config_dialog.exec() == QDialog.Accepted:
+        edit_dialog.setLayout(dlg_layout)
+        edit_dialog.resize(600, 400)
+        if edit_dialog.exec() == QDialog.Accepted:
             new_name = name_edit.text()
-            exe = exe_edit.text()
-            runner = runner_combo.currentText()
-            launch_options = launch_edit.text()
-            enable_dxvk = dxvk_check.isChecked()
-            enable_esync = esync_check.isChecked()
-            enable_fsync = fsync_check.isChecked()
-            enable_dxvk_async = dxvk_async_check.isChecked()
-            app_id = app_id_edit.text() if runner == 'Steam' else ''
-            prefix = prefix_edit.text() if runner in ['Wine', 'Proton'] else ''
-            fps_limit = fps_edit.text()
-            if runner == 'Proton':
-                runner = proton_combo.currentText()
-            if not new_name or (runner != 'Steam' and not exe) or (runner == 'Steam' and not app_id):
-                QMessageBox.warning(self, 'Error', 'Name and Executable/App ID required')
+            new_runner = runner_combo.currentText()
+            new_fps = fps_edit.text()
+            if new_runner == 'Proton':
+                new_runner = proton_combo.currentText()
+            if not new_name:
+                QMessageBox.warning(self, 'Error', 'Name required')
                 return
-            if runner in ['Wine', 'Proton'] and not prefix:
-                prefix = os.path.join(self.config_manager.prefixes_dir, new_name.replace(' ', '_'))
-            if prefix:
-                os.makedirs(prefix, exist_ok=True)
-            if os.name == 'posix' and ':' in exe:
-                exe = exe.replace('\\', '/').replace('C:', '/drive_c')
-            # Aktualizuj game
             game['name'] = new_name
-            game['exe'] = exe
-            game['runner'] = runner
-            game['prefix'] = prefix
-            game['launch_options'] = launch_options
-            game['enable_dxvk'] = enable_dxvk
-            game['enable_esync'] = enable_esync
-            game['enable_fsync'] = enable_fsync
-            game['enable_dxvk_async'] = enable_dxvk_async
-            game['app_id'] = app_id
-            game['fps_limit'] = fps_limit
+            game['runner'] = new_runner
+            game['fps_limit'] = int(new_fps) if new_fps.isdigit() else ''
             self.config_manager.save_games(self.games)
             self.load_games()
-            QMessageBox.information(self, 'Success', 'Game configured successfully!')
+            QMessageBox.information(self, 'Success', 'Game configuration updated!')
 
     def install_proton(self):
         install_dialog = QDialog(self)
@@ -738,18 +623,18 @@ class MainWindow(QMainWindow):
             proton_type = type_combo.currentText()
             progress = QProgressDialog(f"Installing {proton_type} Proton...", "Cancel", 0, 100, self)
             progress.setWindowModality(Qt.WindowModal)
-            progress.setAutoClose(False)  # Zmiana na False, aby ręcznie zamykać
+            progress.setAutoClose(True)
             version = version_combo.currentText() if proton_type != 'Custom' else name_edit.text()
             custom_path = path_edit.text() if proton_type == 'Custom' else None
             custom_type = custom_type_combo.currentText() if proton_type == 'Custom' else None
             if proton_type == 'Custom' and (not version or not custom_path):
                 QMessageBox.warning(self, 'Error', 'Name and Path required')
                 return
-            thread = InstallThread(self.proton_manager, version, proton_type, custom_path, custom_type)
-            thread.update_progress.connect(lambda stage, value, total: progress.setLabelText(stage) or progress.setValue(int(value * 100 / total) if total else 0))
-            thread.finished.connect(lambda success, message: self.install_finished(success, message, version, progress))
-            thread.start()
-            progress.canceled.connect(thread.cancel)
+            self.install_thread = InstallThread(self.proton_manager, version, proton_type, custom_path, custom_type)
+            self.install_thread.update_progress.connect(lambda stage, value, total: progress.setLabelText(stage) or progress.setValue(int(value * 100 / total) if total else 0))
+            self.install_thread.finished.connect(lambda success, message: self.install_finished(success, message, version, progress))
+            self.install_thread.start()
+            progress.canceled.connect(self.install_thread.requestInterruption)
 
     def install_finished(self, success, message, version, progress):
         progress.setValue(100)
@@ -757,7 +642,6 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, 'Success', f'Proton {version} installed')
         else:
             QMessageBox.warning(self, 'Error', f'Failed to install Proton {version}: {message}')
-        progress.close()
         self.start_proton_loading()
 
     def update_proton(self):
@@ -777,12 +661,12 @@ class MainWindow(QMainWindow):
             return
         progress = QProgressDialog(f"Updating {proton_type} Proton to {new_version}...", "Cancel", 0, 100, self)
         progress.setWindowModality(Qt.WindowModal)
-        progress.setAutoClose(False)
-        thread = InstallThread(self.proton_manager, new_version, new_type)
-        thread.update_progress.connect(lambda stage, value, total: progress.setLabelText(stage) or progress.setValue(int(value * 100 / total) if total else 0))
-        thread.finished.connect(lambda success, message: self.update_finished(success, message, new_version, version, progress))
-        thread.start()
-        progress.canceled.connect(thread.cancel)
+        progress.setAutoClose(True)
+        self.update_thread = InstallThread(self.proton_manager, new_version, new_type)
+        self.update_thread.update_progress.connect(lambda stage, value, total: progress.setLabelText(stage) or progress.setValue(int(value * 100 / total) if total else 0))
+        self.update_thread.finished.connect(lambda success, message: self.update_finished(success, message, new_version, version, progress))
+        self.update_thread.start()
+        progress.canceled.connect(self.update_thread.requestInterruption)
 
     def update_finished(self, success, message, new_version, old_version, progress):
         progress.setValue(100)
@@ -791,7 +675,6 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, 'Success', f'Updated to {new_version}')
         else:
             QMessageBox.warning(self, 'Error', f'Failed to update to {new_version}: {message}')
-        progress.close()
         self.start_proton_loading()
 
     def remove_proton(self):
