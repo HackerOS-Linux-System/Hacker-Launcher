@@ -1,0 +1,5 @@
+// python3
+
+> cd source-code
+> python3 -m nuitka --onefile main.py
+> sudo mv main.bin Hacker_Launcher
