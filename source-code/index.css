@@ -1,0 +1,63 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom override for Electron drag region */
+.titlebar-drag {
+    -webkit-app-region: drag;
+}
+
+.no-drag {
+    -webkit-app-region: no-drag;
+}
+
+:root {
+    /* Default (Cyberpunk) */
+    --color-bg: #05050A;
+    --color-card: #0F1019;
+    --color-border: #2A2C3D;
+    --color-accent: #00F0FF;
+    --color-secondary: #7000FF;
+    --color-success: #00FF94;
+    --color-text: #E2E8F0;
+    --color-muted: #94A3B8;
+}
+
+[data-theme='matrix'] {
+    --color-bg: #000500;
+    --color-card: #001100;
+    --color-border: #003300;
+    --color-accent: #00FF00;
+    --color-secondary: #008F11;
+    --color-success: #00FF00;
+    --color-text: #D0FFD0;
+    --color-muted: #408040;
+}
+
+[data-theme='vaporwave'] {
+    --color-bg: #1a0b2e;
+    --color-card: #2d1b4e;
+    --color-border: #432c7a;
+    --color-accent: #ff71ce;
+    --color-secondary: #01cdfe;
+    --color-success: #05ffa1;
+    --color-text: #ffffff;
+    --color-muted: #b967ff;
+}
+
+[data-theme='dracula'] {
+    --color-bg: #282a36;
+    --color-card: #44475a;
+    --color-border: #6272a4;
+    --color-accent: #ff79c6;
+    --color-secondary: #bd93f9;
+    --color-success: #50fa7b;
+    --color-text: #f8f8f2;
+    --color-muted: #6272a4;
+}
+
+body {
+    background-color: var(--color-bg);
+    color: var(--color-text);
+    transition: background-color 0.3s ease, color 0.3s ease;
+}
