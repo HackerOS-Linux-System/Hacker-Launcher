@@ -1,8 +1,0 @@
-[package]
-name = "Hacker_Launcher"
-version = "0.6.0"
-edition = "2021"
-
-[dependencies]
-pyo3 = { version = "0.22.0", features = ["auto-initialize"] }
-rust-embed = "8.5.0"
