@@ -1,12 +1,18 @@
 import { Game } from './types';
 
+// Detect Home Directory (works in Electron/Node environment)
+const HOME = process.env.HOME || '/tmp';
+
+// Zmieniono ścieżkę na katalog użytkownika, aby uniknąć problemów z uprawnieniami
+const APP_ROOT = `${HOME}/.hackeros/Hacker-Launcher`;
+
 export const SYSTEM_PATHS = {
-    BASE: '/usr/share/Hacker-Launcher',
-    PROTONS: '/usr/share/Hacker-Launcher/Protons',
-    PREFIXES: '/usr/share/Hacker-Launcher/Prefixes',
-    LOGS: '/usr/share/Hacker-Launcher/Logs',
-    CONFIG: '/usr/share/Hacker-Launcher/Configs',
-    STEAM_COMPAT_CLIENT_INSTALL_PATH: '/home/deck/.local/share/Steam',
+    BASE: APP_ROOT,
+    PROTONS: `${APP_ROOT}/Protons`,
+    PREFIXES: `${APP_ROOT}/Prefixes`,
+    LOGS: `${APP_ROOT}/Logs`,
+    CONFIG: `${APP_ROOT}/Configs`,
+    STEAM_COMPAT_CLIENT_INSTALL_PATH: `${HOME}/.local/share/Steam`,
 };
 
 // Fallback versions if API fails
