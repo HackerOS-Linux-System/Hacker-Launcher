@@ -19,15 +19,13 @@ if (typeof window !== 'undefined' && window.require) {
         child_process = window.require('child_process');
 
         // Ensure directories exist on boot
-        // Note: This might fail for /usr/share if not root, but we handle creation via pkexec in install later
         [SYSTEM_PATHS.BASE, SYSTEM_PATHS.PROTONS, SYSTEM_PATHS.PREFIXES, SYSTEM_PATHS.LOGS, SYSTEM_PATHS.CONFIG].forEach(dir => {
             try {
                 if (fs && !fs.existsSync(dir)) {
-                    // Attempt creation, suppress error if permission denied (handled later or logged)
                     fs.mkdirSync(dir, { recursive: true });
                 }
             } catch(e) {
-                console.warn(`Could not create dir ${dir} on boot (likely permissions):`, e);
+                console.warn(`Could not create dir ${dir}:`, e);
             }
         });
 
@@ -39,6 +37,22 @@ if (typeof window !== 'undefined' && window.require) {
 // --- CONSTANTS & HELPERS ---
 const GAMES_FILE = path ? path.join(SYSTEM_PATHS.CONFIG, 'games.json') : 'games.json';
 const SETTINGS_FILE = path ? path.join(SYSTEM_PATHS.CONFIG, 'settings.json') : 'settings.json';
+
+// --- UTILS ---
+
+const ensureDirectoryWritable = async (dirPath: string) => {
+    if (!fs) return;
+
+    // Check if exists
+    if (!fs.existsSync(dirPath)) {
+        try {
+            fs.mkdirSync(dirPath, { recursive: true });
+        } catch (e) {
+            console.error(`Failed to create directory ${dirPath}:`, e);
+            throw new Error(`Could not create directory: ${dirPath}. Check user permissions.`);
+        }
+    }
+};
 
 // --- PROTON MANAGER ---
 
@@ -111,52 +125,26 @@ export const getProtonVersions = async (): Promise<ProtonVersion[]> => {
 export const installProtonVersion = async (versionId: string, downloadUrl?: string): Promise<string> => {
     if (!downloadUrl) throw new Error("No valid download URL found for this version.");
 
-    // REAL IMPLEMENTATION
     if (child_process && path) {
+        // Ensure protons dir is writable
+        await ensureDirectoryWritable(SYSTEM_PATHS.PROTONS);
+
         const installPath = path.join(SYSTEM_PATHS.PROTONS, versionId);
-        // We use /tmp for download to avoid permission issues during download phase
         const tempFile = path.join('/tmp', `hacker-launcher-${versionId}.tar`);
 
-        // 1. Check if we need root (pkexec)
-        const needsRoot = installPath.startsWith('/usr') || installPath.startsWith('/opt') || installPath.startsWith('/var');
-
-        // 2. Construct Command
-        // -L follows redirects
-        // -f fails on HTTP errors
-        // -A sets User-Agent (Github requires this)
         const curlCmd = `curl -L -f -A "HackerLauncher/1.0" "${downloadUrl}" -o "${tempFile}"`;
-
-        // Tar extraction command
-        // We use auto-detect (-a) if available, or just -xf which modern tar handles
         const tarCmd = `mkdir -p "${installPath}" && tar -xf "${tempFile}" -C "${installPath}" --strip-components=1`;
-
-        // Cleanup command
         const cleanCmd = `rm "${tempFile}"`;
 
-        // Combine commands
-        // If we need root, we run the mkdir/tar part via pkexec
-        let finalCmd = '';
-
-        if (needsRoot) {
-            // Download to /tmp as user (usually allowed), then sudo the install
-            // Note: Escape quotes for sh -c
-            const installScript = `${tarCmd}`;
-            finalCmd = `${curlCmd} && pkexec sh -c '${installScript}' && ${cleanCmd}`;
-        } else {
-            finalCmd = `${curlCmd} && ${tarCmd} && ${cleanCmd}`;
-        }
+        const finalCmd = `${curlCmd} && ${tarCmd} && ${cleanCmd}`;
 
         console.log(`Executing Install: ${finalCmd}`);
 
         return new Promise((resolve, reject) => {
             child_process.exec(finalCmd, (error: any, _stdout: string, stderr: string) => {
                 if (error) {
-                    console.error("Install Error Details:", stderr);
-                    if (stderr.includes("polkit")) {
-                        reject("Installation cancelled or permission denied by user.");
-                    } else {
-                        reject(`Failed: ${stderr || error.message}`);
-                    }
+                    console.error("Install Error:", stderr);
+                    reject(`Failed: ${stderr || error.message}`);
                 } else {
                     resolve("Installation successful");
                 }
@@ -164,7 +152,6 @@ export const installProtonVersion = async (versionId: string, downloadUrl?: stri
         });
     }
 
-    // Fallback for browser testing
     return new Promise(resolve => setTimeout(() => resolve("[SIMULATION] Installed"), 2000));
 }
 
@@ -173,34 +160,179 @@ export const deleteProtonVersion = async (versionId: string): Promise<boolean> =
         const dir = path.join(SYSTEM_PATHS.PROTONS, versionId);
         if (fs.existsSync(dir)) {
             try {
-                // Try normal delete
                 fs.rmSync(dir, { recursive: true, force: true });
                 return true;
             } catch(e) {
-                // Fallback to pkexec if permission denied
-                console.log("Permission denied on delete, trying pkexec...");
-                const cmd = `pkexec rm -rf "${dir}"`;
-                return new Promise((resolve) => {
-                    child_process.exec(cmd, (err: any) => {
-                        resolve(!err);
-                    });
-                });
+                console.error("Failed to delete directory:", e);
+                return false;
             }
         }
     }
     return true;
 }
 
+// --- GAME EXECUTION ---
+
+export const constructLaunchCommand = (game: Game): {
+    executable: string,
+    args: string[],
+    env: Record<string, string>,
+    cwd: string,
+    fullCmdString: string
+} => {
+    const env: Record<string, string> = { ...process.env } as any;
+
+    // Paths
+    const safeTitle = game.title.replace(/[^a-zA-Z0-9]/g, '_');
+    const prefixPath = path ? path.join(SYSTEM_PATHS.PREFIXES, safeTitle) : `/tmp/${safeTitle}`;
+    // Determine the Game Directory (Critical for the game to find its own files)
+    const gameCwd = path && game.executablePath ? path.dirname(game.executablePath) : '';
+
+    // Proton path handling
+    let protonPath = game.protonVersion;
+    if (game.protonVersion !== 'Native' && path) {
+        // If it's a known ID like GE-Proton8-25, map it to the path
+        if (!game.protonVersion.includes('/')) {
+            protonPath = path.join(SYSTEM_PATHS.PROTONS, game.protonVersion, 'proton');
+        }
+    }
+
+    // Environment Variables
+    env['WINEPREFIX'] = prefixPath;
+    env['WINEESYNC'] = '1';
+    env['WINEFSYNC'] = '1';
+    env['DXVK_ASYNC'] = '1';
+
+    if (game.protonVersion !== 'Native') {
+        env['STEAM_COMPAT_CLIENT_INSTALL_PATH'] = SYSTEM_PATHS.STEAM_COMPAT_CLIENT_INSTALL_PATH;
+        env['STEAM_COMPAT_DATA_PATH'] = prefixPath;
+
+        // Fix for "Unit Test" warning in ProtonFixes:
+        // Use 0 or a generic AppId to tell Proton this is a manual non-steam game
+        env['SteamAppId'] = '0';
+        env['SteamGameId'] = '0';
+        env['ProtonGameId'] = '0'; // game.id might be 'manual-123' which breaks python int casting
+    }
+
+    // Arguments Construction
+    const args: string[] = [];
+    const launchOptions = game.launchOptions ? game.launchOptions.split(' ') : [];
+
+    let executable = '';
+
+    if (game.protonVersion === 'Native') {
+        executable = game.executablePath || '';
+        args.push(...launchOptions);
+    } else {
+        // Proton / Wine Launch
+        if (!game.protonVersion.includes('Wine') && !game.protonVersion.toLowerCase().includes('lutris')) {
+            // Standard Proton
+            executable = protonPath;
+            args.push('run');
+        } else {
+            // System Wine fallback
+            executable = 'wine';
+        }
+
+        args.push(game.executablePath || '');
+        args.push(...launchOptions);
+    }
+
+    const fullCmdString = `${executable} ${args.join(' ')}`;
+
+    return {
+        executable,
+        args,
+        env,
+        cwd: gameCwd,
+        fullCmdString
+    };
+}
+
+export const launchGame = async (game: Game): Promise<string> => {
+    if (!child_process || !fs) throw new Error("Not running in Desktop mode");
+
+    const safeTitle = game.title.replace(/[^a-zA-Z0-9]/g, '_');
+    const logFile = path.join(SYSTEM_PATHS.LOGS, `${safeTitle}.log`);
+    const prefixPath = path.join(SYSTEM_PATHS.PREFIXES, safeTitle);
+
+    // 1. Ensure Writable Prefix & Logs & Steam Dummy Path
+    await ensureDirectoryWritable(SYSTEM_PATHS.LOGS);
+    await ensureDirectoryWritable(SYSTEM_PATHS.PREFIXES);
+
+    // Create dummy Steam path to satisfy Proton scripts
+    if (!fs.existsSync(SYSTEM_PATHS.STEAM_COMPAT_CLIENT_INSTALL_PATH)) {
+        try {
+            fs.mkdirSync(SYSTEM_PATHS.STEAM_COMPAT_CLIENT_INSTALL_PATH, { recursive: true });
+        } catch(e) { console.warn("Failed to create dummy steam path", e); }
+    }
+
+    // Explicitly create the specific prefix folder if missing
+    if (!fs.existsSync(prefixPath)) {
+        try {
+            fs.mkdirSync(prefixPath, { recursive: true });
+        } catch(e) {
+            throw new Error(`Failed to create prefix directory at ${prefixPath}: ${e}`);
+        }
+    }
+
+    // 2. Prepare Command
+    const { executable, args, env, cwd, fullCmdString } = constructLaunchCommand(game);
+
+    return new Promise((resolve, reject) => {
+        try {
+            const logStream = fs.createWriteStream(logFile, { flags: 'a' });
+
+            logStream.write(`\n\n--- LAUNCHING ${game.title} [${new Date().toISOString()}] ---\n`);
+            logStream.write(`CMD: ${fullCmdString}\n`);
+            logStream.write(`CWD: ${cwd}\n`); // Log the working directory
+            logStream.write(`PREFIX: ${env['WINEPREFIX']}\n\n`);
+
+            const child = child_process.spawn(executable, args, {
+                env: env,
+                cwd: cwd, // IMPORTANT: Set current working directory to the game folder!
+                detached: true,
+                stdio: ['ignore', 'pipe', 'pipe']
+            });
+
+            child.stdout.pipe(logStream);
+            child.stderr.pipe(logStream);
+
+            child.on('error', (err: any) => {
+                const msg = `Failed to spawn: ${err.message}`;
+                logStream.write(msg + '\n');
+                reject(msg);
+            });
+
+            child.on('spawn', () => {
+                resolve(`Game launched. PID: ${child.pid}. Logs: ${logFile}`);
+                child.unref(); // Don't block parent process
+            });
+
+        } catch (e: any) {
+            reject(e.message);
+        }
+    });
+};
+
+
 // --- GAME MANAGEMENT (PERSISTENCE) ---
 
 export const fetchGames = async (): Promise<Game[]> => {
-    if (fs && fs.existsSync(GAMES_FILE)) {
-        try {
-            const raw = fs.readFileSync(GAMES_FILE, 'utf-8');
-            return JSON.parse(raw);
-        } catch (e) {
-            console.error("Failed to read games.json", e);
-            return [];
+    if (fs) {
+        // Ensure config writable before reading/writing might fail later
+        if (!fs.existsSync(SYSTEM_PATHS.CONFIG)) {
+            await ensureDirectoryWritable(SYSTEM_PATHS.CONFIG);
+        }
+
+        if (fs.existsSync(GAMES_FILE)) {
+            try {
+                const raw = fs.readFileSync(GAMES_FILE, 'utf-8');
+                return JSON.parse(raw);
+            } catch (e) {
+                console.error("Failed to read games.json", e);
+                return [];
+            }
         }
     }
     return [];
@@ -208,12 +340,11 @@ export const fetchGames = async (): Promise<Game[]> => {
 
 export const saveGamesToDisk = async (games: Game[]) => {
     if (fs) {
-        // Ensure config dir exists (might need root if in /usr/share... ideally config should be in ~/.config)
-        // For now, assuming user has rights or we use a try-catch
         try {
+            await ensureDirectoryWritable(SYSTEM_PATHS.CONFIG);
             fs.writeFileSync(GAMES_FILE, JSON.stringify(games, null, 2));
         } catch (e) {
-            console.error("Failed to save games.json (permissions?)", e);
+            console.error("Failed to save games.json", e);
         }
     }
 };
@@ -227,12 +358,11 @@ export const addCustomGameToLibrary = async (gameData: Partial<Game>): Promise<G
         playtime: 0,
         lastPlayed: 'Never',
         isInstalled: true,
-        protonVersion: gameData.protonVersion || 'GE-Proton8-25',
+        protonVersion: gameData.protonVersion || 'Native',
         launchOptions: gameData.launchOptions || '',
         source: 'manual',
         executablePath: gameData.executablePath
     };
-
     return newGame;
 }
 
@@ -242,9 +372,10 @@ export const updateGameConfig = async (_gameId: string, _proton: string, _option
 
 // --- SETTINGS (THEMES) ---
 
-export const saveSettings = (settings: any) => {
+export const saveSettings = async (settings: any) => {
     if (fs) {
         try {
+            await ensureDirectoryWritable(SYSTEM_PATHS.CONFIG);
             fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2));
         } catch (e) { console.error(e); }
     }
@@ -269,54 +400,3 @@ export const getSystemStats = async (): Promise<SystemStats> => {
         temp: Math.floor(Math.random() * 15) + 55,
     };
 };
-
-export const constructLaunchCommand = (game: Game): { cmd: string, env: Record<string, string> } => {
-    const env: Record<string, string> = { ...process.env } as any;
-
-    // Normalize paths
-    const safeTitle = game.title.replace(/[^a-zA-Z0-9]/g, '_');
-    const prefixPath = path ? path.join(SYSTEM_PATHS.PREFIXES, safeTitle) : `/tmp/${safeTitle}`;
-    const protonPath = path ? path.join(SYSTEM_PATHS.PROTONS, game.protonVersion, 'proton') : game.protonVersion;
-
-    // Manual Games configuration
-    env['WINEPREFIX'] = prefixPath;
-    env['WINEESYNC'] = '1';
-    env['WINEFSYNC'] = '1';
-    env['DXVK_ASYNC'] = '1';
-
-    if (game.protonVersion !== 'Native') {
-        env['STEAM_COMPAT_CLIENT_INSTALL_PATH'] = SYSTEM_PATHS.STEAM_COMPAT_CLIENT_INSTALL_PATH;
-        env['STEAM_COMPAT_DATA_PATH'] = prefixPath;
-    }
-
-    let cmdParts: string[] = [];
-    const launchOptions = game.launchOptions.split(' ');
-
-    const gamescopeIdx = launchOptions.indexOf('--gamescope');
-    if (gamescopeIdx !== -1) {
-        cmdParts.push('gamescope');
-        if (launchOptions.includes('-f')) cmdParts.push('-f');
-        cmdParts.push('--');
-    }
-
-    if (game.protonVersion === 'Native') {
-        cmdParts.push(game.executablePath || 'unknown_exe');
-        cmdParts.push(...launchOptions);
-    } else {
-        if (!game.protonVersion.includes('Wine')) {
-            // Standard Proton
-            cmdParts.push(protonPath);
-            cmdParts.push('run');
-        } else {
-            // System Wine fallback
-            cmdParts.push('wine');
-        }
-        cmdParts.push(game.executablePath || 'unknown_exe');
-        cmdParts.push(...launchOptions);
-    }
-
-    return {
-        cmd: cmdParts.join(' '),
-        env: env
-    };
-}
