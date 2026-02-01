@@ -1,7 +1,7 @@
 {
   "name": "Hacker_Launcher",
   "productName": "Hacker Launcher",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "A Linux-first game launcher interface designed for Proton management with a cyberpunk aesthetic.",
   "main": "electron/main.js",
   "scripts": {
