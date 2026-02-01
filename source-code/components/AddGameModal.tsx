@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { X, FolderOpen, Gamepad, Image as ImageIcon, Terminal, Cpu } from 'lucide-react';
 import { Game } from '../types';
 import { getProtonVersions } from '../services/tauriBridge';
@@ -18,6 +18,9 @@ const AddGameModal: React.FC<AddGameModalProps> = ({ isOpen, onClose, onAdd }) =
     const [protonVersion, setProtonVersion] = useState('');
     const [launchOptions, setLaunchOptions] = useState('');
     const [availableProtons, setAvailableProtons] = useState<string[]>(FALLBACK_PROTON_VERSIONS);
+
+    // Reference for the hidden file input
+    const fileInputRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
         if (isOpen) {
@@ -61,6 +64,27 @@ const AddGameModal: React.FC<AddGameModalProps> = ({ isOpen, onClose, onAdd }) =
             setBackdropUrl('');
             setLaunchOptions('');
             onClose();
+        }
+    };
+
+    const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (file) {
+            // In Electron with nodeIntegration: true, the File object has a 'path' property
+            // containing the full absolute path.
+            const fullPath = (file as any).path;
+
+            if (fullPath) {
+                setExePath(fullPath);
+                // Auto-fill title if empty based on filename
+                if (!title) {
+                    const filename = file.name.replace(/\.[^/.]+$/, ""); // remove extension
+                    setTitle(filename.charAt(0).toUpperCase() + filename.slice(1));
+                }
+            } else {
+                // Fallback for browser testing
+                setExePath(file.name);
+            }
         }
     };
 
@@ -125,8 +149,23 @@ const AddGameModal: React.FC<AddGameModalProps> = ({ isOpen, onClose, onAdd }) =
         placeholder="/home/deck/Games/WoW/WoW.exe"
         required
         />
-        <button type="button" className="p-3 bg-white/5 hover:bg-white/10 rounded-xl border border-white/10 text-white transition-colors">
-        <FolderOpen size={18} />
+
+        {/* Hidden File Input */}
+        <input
+        type="file"
+        ref={fileInputRef}
+        onChange={handleFileSelect}
+        className="hidden"
+        accept=".exe,.sh,.bin,.bat"
+        />
+
+        <button
+        type="button"
+        onClick={() => fileInputRef.current?.click()}
+        className="p-3 bg-white/5 hover:bg-white/10 rounded-xl border border-white/10 text-white transition-colors group"
+        title="Browse Files"
+        >
+        <FolderOpen size={18} className="group-hover:text-deck-accent transition-colors" />
         </button>
         </div>
         </div>
