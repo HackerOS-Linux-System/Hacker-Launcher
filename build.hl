@@ -1,4 +1,5 @@
-// python3.13
-// cargo
+// npm
 
-> cargo build --release
+> cd source-code
+> npm install
+> npm run dist
