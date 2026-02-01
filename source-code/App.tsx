@@ -10,7 +10,7 @@ import { Game, LogEntry, ViewState } from './types';
 import {
     fetchGames,
     saveGamesToDisk,
-    constructLaunchCommand,
+    launchGame,
     addCustomGameToLibrary,
     loadSettings,
     saveSettings
@@ -44,7 +44,7 @@ const App: React.FC = () => {
     // Initialize
     useEffect(() => {
         const initSystem = async () => {
-            addLog(`Mounting /usr/share/Hacker-Launcher...`, 'info');
+            addLog(`Mounting ${SYSTEM_PATHS.BASE}...`, 'info');
 
             // Load Settings (Theme)
             const settings = loadSettings();
@@ -95,20 +95,17 @@ const App: React.FC = () => {
         }
 
         try {
-            const { cmd, env } = constructLaunchCommand(game);
-
             setIsTerminalOpen(true);
-            addLog(`Preparing Prefix: ${env['WINEPREFIX'] || 'System Default'}`, 'info');
-            addLog(`Runner: ${game.protonVersion}`, 'info');
-            addLog(`Command: ${cmd}`, 'warning');
+            addLog(`Initializing launch sequence for ${game.title}...`, 'info');
 
-            // Simulating process execution call (real exec happens in bridge if connected)
-            addLog(`Process spawned successfully.`, 'success');
-            const logFile = `${SYSTEM_PATHS.LOGS}/${game.title.replace(/[^a-zA-Z0-9]/g, '_')}.log`;
-            addLog(`Streaming logs to ${logFile}`, 'info');
+            const resultMsg = await launchGame(game);
+
+            addLog(resultMsg, 'success');
+            addLog('Check the Terminal or Log file for detailed output.', 'info');
 
         } catch (e) {
             addLog(`Launch failed: ${(e as Error).message}`, 'error');
+            addLog('Try checking folder permissions in /usr/share/Hacker-Launcher', 'warning');
         }
     };
 
