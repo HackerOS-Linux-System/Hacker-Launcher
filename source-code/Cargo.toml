@@ -1,0 +1,23 @@
+[package]
+name = "Hacker_Launcher"
+version = "0.8.0"
+edition = "2021"
+authors = ["HackerOS <hackeros068@gmail.com>"]
+description = "Hacker Launcher — PyO3 embedded launcher"
+
+[[bin]]
+name = "hacker-launcher"
+path = "src/main.rs"
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["auto-initialize"] }
+
+[build-dependencies]
+# brak — pliki .py embedujemy przez include_bytes! w main.rs
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
