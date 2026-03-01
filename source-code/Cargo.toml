@@ -6,7 +6,7 @@ authors = ["HackerOS <hackeros068@gmail.com>"]
 description = "Hacker Launcher — PyO3 embedded launcher"
 
 [[bin]]
-name = "hacker-launcher"
+name = "Hacker_Launcher"
 path = "src/main.rs"
 
 [dependencies]
