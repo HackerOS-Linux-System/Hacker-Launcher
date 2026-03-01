@@ -1,5 +1,4 @@
-// npm
+// cargo
 
 > cd source-code
-> npm install
-> npm run dist
+> cargo build --release
