@@ -4,10 +4,21 @@ import shutil
 import logging
 from config_manager import ConfigManager
 
+
 class GameManager:
     def __init__(self, proton_manager):
         self.proton_manager = proton_manager
         self.config_manager = ConfigManager()
+
+    def _update_game_in_config(self, updated_game):
+        """Update a game entry in the saved games.json file."""
+        games = self.config_manager.load_games()
+        for i, game in enumerate(games):
+            if game['name'] == updated_game['name']:
+                games[i] = updated_game
+                break
+        self.config_manager.save_games(games)
+        logging.info(f"Updated game config: {updated_game['name']}")
 
     def add_game(self, game):
         games = self.config_manager.load_games()
@@ -36,10 +47,16 @@ class GameManager:
         if runner == 'Steam' and not app_id:
             raise Exception("Steam App ID not set")
 
-        # Set up environment for Wine/Proton
+        # Handle Wine/Proton prefix
         if runner in ['Wine'] or 'Proton' in runner:
             if not prefix:
-                raise Exception("Prefix not set for Wine/Proton runner")
+                # Create default prefix
+                prefix = os.path.join(self.config_manager.prefixes_dir, game['name'].replace(' ', '_'))
+                logging.info(f"No prefix set for {game['name']}, using default: {prefix}")
+                # Update the game dict and save to config
+                game['prefix'] = prefix
+                self._update_game_in_config(game)
+
             try:
                 os.makedirs(prefix, exist_ok=True)
                 # Fix ownership if running as root with sudo
@@ -52,6 +69,7 @@ class GameManager:
                     subprocess.run(['chown', '-R', f'{user_id}:{group_id}', protonfixes_dir], check=True)
             except Exception as e:
                 raise Exception(f"Failed to set up prefix or protonfixes: {e}")
+
             env['WINEPREFIX'] = prefix
             if game.get('enable_dxvk', False):
                 env['WINEDLLOVERRIDES'] = 'd3d11=n,b;dxgi=n,b'
