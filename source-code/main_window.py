@@ -444,6 +444,8 @@ class MainWindow(QMainWindow):
             try:
                 gamescope_flag = '--gamescope' in game.get('launch_options', '')
                 self.game_manager.launch_game(game, gamescope_flag)
+                # Reload games to pick up any prefix updates made by the launch (if any)
+                self.load_games()
             except Exception as e:
                 logging.error(f"Error launching {name}: {e}")
                 print(f"Error launching {name}: {e}")
