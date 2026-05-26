@@ -1,5 +1,6 @@
 // cargo
-// python3.13
+// npm
 
 > cd source-code
-> cargo build --release
+> npm install
+> npm run tauri build
