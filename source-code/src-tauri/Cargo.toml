@@ -1,23 +1,31 @@
 [package]
-name = "Hacker_Launcher"
-version = "0.8.0"
+name = "hacker-launcher"
+version = "0.5.0"
+description = "Hacker Launcher - Game launcher with Proton/Wine support"
+authors = ["HackerOS"]
 edition = "2021"
-authors = ["HackerOS <hackeros068@gmail.com>"]
-description = "Hacker Launcher — PyO3 embedded launcher"
-
-[[bin]]
-name = "Hacker_Launcher"
-path = "src/main.rs"
-
-[dependencies]
-pyo3 = { version = "0.22", features = ["auto-initialize"] }
 
 [build-dependencies]
-# brak — pliki .py embedujemy przez include_bytes! w main.rs
+tauri-build = { version = "1.5", features = [] }
 
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
-strip = true
-panic = "abort"
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[dependencies]
+tauri = { version = "1.7", features = [ "dialog-all", "shell-open", "custom-protocol"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.11", features = ["json", "stream"] }
+dirs = "5"
+chrono = { version = "0.4", features = ["serde"] }
+log = "0.4"
+env_logger = "0.10"
+anyhow = "1"
+futures-util = "0.3"
+walkdir = "2"
+which = "6"
+flate2 = "1"
+tar = "0.4"
+getrandom = "=0.2.15"
