@@ -1,240 +1,221 @@
-use pyo3::prelude::*;
-use pyo3::types::PyDict;
-use std::env;
-use std::fs;
-use std::path::{Path, PathBuf};
+// Prevents additional console window on Windows in release
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-// ============================================================
-//  Embedowane pliki Python — spakowane wewnątrz binarki ELF
-// ============================================================
-const CONFIG_MANAGER_PY:  &[u8] = include_bytes!("../config_manager.py");
-const GAME_MANAGER_PY:    &[u8] = include_bytes!("../game_manager.py");
-const MAIN_PY:            &[u8] = include_bytes!("../main.py");
-const MAIN_WINDOW_PY:     &[u8] = include_bytes!("../main_window.py");
-const PROTON_MANAGER_PY:  &[u8] = include_bytes!("../proton_manager.py");
+mod config_manager;
+mod game_manager;
+mod proton_manager;
 
-// ============================================================
-//  Aktywacja venv — odpowiednik: source ~/.hackeros/venv/bin/activate
-//  Rust nie może wywołać `source` (to komenda bash), więc
-//  ręcznie ustawiamy zmienne środowiskowe tak jak robi to
-//  skrypt activate.
-// ============================================================
-fn activate_venv(venv_path: &Path) -> Result<PathBuf, String> {
-    // Sprawdź czy venv istnieje
-    let python_bin = venv_path.join("bin").join("python3");
-    if !python_bin.exists() {
-        // Spróbuj też "python"
-        let python_bin2 = venv_path.join("bin").join("python");
-        if !python_bin2.exists() {
-            return Err(format!(
-                "Nie znaleziono Pythona w venv: {}\n\
-Upewnij się że venv istnieje:\n\
-python3 -m venv ~/.hackeros/venv\n\
-pip install PySide6 requests",
-venv_path.display()
-            ));
-        }
-        return Ok(python_bin2);
-    }
+use config_manager::ConfigManager;
+use game_manager::GameManager;
+use proton_manager::ProtonManager;
+use std::sync::Mutex;
+use tauri::State;
 
-    let venv_str = venv_path
-    .to_str()
-    .ok_or("Nieprawidłowa ścieżka venv (nie-UTF8)")?;
-
-    // 1. VIRTUAL_ENV — informuje Python że jest w venv
-    env::set_var("VIRTUAL_ENV", venv_str);
-
-    // 2. PATH — dodaj bin/ venv na początek PATH
-    let venv_bin = venv_path.join("bin");
-    let venv_bin_str = venv_bin
-    .to_str()
-    .ok_or("Nieprawidłowa ścieżka bin w venv")?;
-
-    let current_path = env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", venv_bin_str, current_path);
-    env::set_var("PATH", &new_path);
-
-    // 3. Usuń PYTHONHOME jeśli był ustawiony (venv tego wymaga)
-    env::remove_var("PYTHONHOME");
-
-    // 4. PYTHONPATH — ustaw site-packages z venv
-    //    Znajdź dynamicznie (np. python3.11, python3.12 itp.)
-    let site_packages = find_site_packages(venv_path);
-    if let Some(sp) = site_packages {
-        let sp_str = sp.to_str().unwrap_or("");
-        let current_pypath = env::var("PYTHONPATH").unwrap_or_default();
-        if current_pypath.is_empty() {
-            env::set_var("PYTHONPATH", sp_str);
-        } else {
-            env::set_var("PYTHONPATH", format!("{}:{}", sp_str, current_pypath));
-        }
-    }
-
-    // 5. Usuń __PYVENV_LAUNCHER__ (macOS artifact, szkodzi na Linux)
-    env::remove_var("__PYVENV_LAUNCHER__");
-
-    Ok(python_bin)
+pub struct AppState {
+    pub config: Mutex<ConfigManager>,
+    pub proton: Mutex<ProtonManager>,
+    pub game: Mutex<GameManager>,
 }
 
-/// Znajdź site-packages wewnątrz venv (obsługuje różne wersje Pythona)
-fn find_site_packages(venv_path: &Path) -> Option<PathBuf> {
-    let lib_path = venv_path.join("lib");
-    if !lib_path.exists() {
-        return None;
-    }
-    // Przejdź przez python3.x katalogi
-    if let Ok(entries) = fs::read_dir(&lib_path) {
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if name_str.starts_with("python") {
-                let sp = entry.path().join("site-packages");
-                if sp.exists() {
-                    return Some(sp);
-                }
-            }
-        }
-    }
-    None
+// ─────────────────────────────────────────────
+//  Config / Settings commands
+// ─────────────────────────────────────────────
+
+#[tauri::command]
+fn get_settings(state: State<AppState>) -> Result<config_manager::Settings, String> {
+    let cfg = state.config.lock().map_err(|e| e.to_string())?;
+    Ok(cfg.settings.clone())
 }
 
-/// Pobierz nazwę aktualnego użytkownika (do budowania ścieżki venv)
-fn get_username() -> String {
-    // Najpierw sprawdź SUDO_USER (jeśli uruchomiono przez sudo)
-    if let Ok(sudo_user) = env::var("SUDO_USER") {
-        if !sudo_user.is_empty() && sudo_user != "root" {
-            return sudo_user;
-        }
-    }
-    // Potem USER
-    if let Ok(user) = env::var("USER") {
-        if !user.is_empty() {
-            return user;
-        }
-    }
-    // Potem LOGNAME
-    if let Ok(logname) = env::var("LOGNAME") {
-        if !logname.is_empty() {
-            return logname;
-        }
-    }
-    // Fallback — odczytaj z /proc/self/loginuid lub whoami
-    if let Ok(output) = std::process::Command::new("whoami").output() {
-        let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !name.is_empty() {
-            return name;
-        }
-    }
-    // Ostateczny fallback
-    "user".to_string()
-}
-
-/// Wypakuj pliki .py do katalogu tymczasowego i zwróć ścieżkę
-fn extract_python_files(target_dir: &Path) -> Result<(), String> {
-    let files: &[(&str, &[u8])] = &[
-        ("config_manager.py",  CONFIG_MANAGER_PY),
-        ("game_manager.py",    GAME_MANAGER_PY),
-        ("main.py",            MAIN_PY),
-        ("main_window.py",     MAIN_WINDOW_PY),
-        ("proton_manager.py",  PROTON_MANAGER_PY),
-    ];
-
-    fs::create_dir_all(target_dir)
-    .map_err(|e| format!("Nie można utworzyć katalogu tymczasowego: {}", e))?;
-
-    for (filename, content) in files {
-        let dest = target_dir.join(filename);
-        fs::write(&dest, content)
-        .map_err(|e| format!("Błąd zapisu {}: {}", filename, e))?;
-    }
-
+#[tauri::command]
+fn save_settings(
+    state: State<AppState>,
+    settings: config_manager::Settings,
+) -> Result<(), String> {
+    let mut cfg = state.config.lock().map_err(|e| e.to_string())?;
+    cfg.save_settings(&settings).map_err(|e| e.to_string())?;
+    cfg.settings = settings;
     Ok(())
 }
 
+#[tauri::command]
+fn get_paths(state: State<AppState>) -> Result<config_manager::Paths, String> {
+    let cfg = state.config.lock().map_err(|e| e.to_string())?;
+    Ok(config_manager::Paths {
+        prefixes_dir: cfg.prefixes_dir.to_string_lossy().to_string(),
+        protons_dir: cfg.protons_dir.to_string_lossy().to_string(),
+        logs_dir: cfg.logs_dir.to_string_lossy().to_string(),
+    })
+}
+
+// ─────────────────────────────────────────────
+//  Game commands
+// ─────────────────────────────────────────────
+
+#[tauri::command]
+fn get_games(state: State<AppState>) -> Result<Vec<game_manager::Game>, String> {
+    let gm = state.game.lock().map_err(|e| e.to_string())?;
+    gm.load_games().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn add_game(state: State<AppState>, game: game_manager::Game) -> Result<(), String> {
+    let gm = state.game.lock().map_err(|e| e.to_string())?;
+    gm.add_game(game).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn remove_game(state: State<AppState>, name: String) -> Result<(), String> {
+    let gm = state.game.lock().map_err(|e| e.to_string())?;
+    gm.remove_game(&name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_game(state: State<AppState>, game: game_manager::Game) -> Result<(), String> {
+    let gm = state.game.lock().map_err(|e| e.to_string())?;
+    gm.update_game(game).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn launch_game(
+    state: State<AppState>,
+    game: game_manager::Game,
+    gamescope: bool,
+) -> Result<(), String> {
+    let gm = state.game.lock().map_err(|e| e.to_string())?;
+    gm.launch_game(game, gamescope).map_err(|e| e.to_string())
+}
+
+// ─────────────────────────────────────────────
+//  Proton commands
+// ─────────────────────────────────────────────
+
+#[tauri::command]
+fn get_installed_protons(
+    state: State<AppState>,
+) -> Result<Vec<proton_manager::ProtonEntry>, String> {
+    let pm = state.proton.lock().map_err(|e| e.to_string())?;
+    pm.get_installed_protons().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_available_ge() -> Result<Vec<String>, String> {
+    proton_manager::ProtonManager::fetch_available_ge()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_available_official(stable: bool) -> Result<Vec<String>, String> {
+    proton_manager::ProtonManager::fetch_available_official(stable)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn install_proton(
+    state: State<'_, AppState>,
+    version: String,
+    proton_type: String,
+    window: tauri::Window,
+) -> Result<(), String> {
+    let protons_dir = {
+        let pm = state.proton.lock().map_err(|e| e.to_string())?;
+        pm.protons_dir.clone()
+    };
+    proton_manager::ProtonManager::install_proton_async(
+        protons_dir,
+        version,
+        proton_type,
+        window,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn install_custom_tar(
+    state: State<'_, AppState>,
+    tar_path: String,
+    version: String,
+    window: tauri::Window,
+) -> Result<(), String> {
+    let protons_dir = {
+        let pm = state.proton.lock().map_err(|e| e.to_string())?;
+        pm.protons_dir.clone()
+    };
+    proton_manager::ProtonManager::install_custom_tar_async(protons_dir, tar_path, version, window)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn install_custom_folder(
+    state: State<AppState>,
+    src_folder: String,
+    version: String,
+) -> Result<(), String> {
+    let pm = state.proton.lock().map_err(|e| e.to_string())?;
+    pm.install_custom_folder(&src_folder, &version)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn remove_proton(state: State<AppState>, version: String) -> Result<(), String> {
+    let pm = state.proton.lock().map_err(|e| e.to_string())?;
+    pm.remove_proton(&version).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn check_proton_update(
+    _state: State<'_, AppState>,
+    version: String,
+    proton_type: String,
+) -> Result<Option<(String, String)>, String> {
+    proton_manager::ProtonManager::check_update_async(version, proton_type)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// ─────────────────────────────────────────────
+//  Main
+// ─────────────────────────────────────────────
+
 fn main() {
-    // --------------------------------------------------------
-    // 1. Określ ścieżkę do venv na podstawie nazwy użytkownika
-    // --------------------------------------------------------
-    let username = get_username();
-    let venv_path = PathBuf::from(format!("/home/{}/.hackeros/venv", username));
+    let config = ConfigManager::new().expect("Failed to initialize ConfigManager");
+    let proton = ProtonManager::new(config.protons_dir.clone());
+    let game = GameManager::new(
+        config.games_file.clone(),
+        config.prefixes_dir.clone(),
+        config.logs_dir.clone(),
+        config.protons_dir.clone(),
+        config.settings.clone(),
+    );
 
-    println!("[Hacker Launcher] Użytkownik: {}", username);
-    println!("[Hacker Launcher] Venv: {}", venv_path.display());
-
-    // --------------------------------------------------------
-    // 2. Aktywuj venv (ustaw zmienne środowiskowe)
-    // --------------------------------------------------------
-    match activate_venv(&venv_path) {
-        Ok(python_bin) => {
-            println!("[Hacker Launcher] Python: {}", python_bin.display());
-        }
-        Err(e) => {
-            eprintln!("[Hacker Launcher] BŁĄD aktywacji venv:\n{}", e);
-            std::process::exit(1);
-        }
-    }
-
-    // --------------------------------------------------------
-    // 3. Wypakuj pliki .py do ~/.hackeros/hacker-launcher/
-    //    (stały katalog — nie /tmp — żeby PySide6 mogło działać
-    //     i nie rozpakowywać za każdym razem)
-    // --------------------------------------------------------
-    let app_dir = PathBuf::from(format!(
-        "/home/{}/.hackeros/Hacker-Launcher/tmp/",
-        username
-    ));
-
-    if let Err(e) = extract_python_files(&app_dir) {
-        eprintln!("[Hacker Launcher] BŁĄD wypakowania plików:\n{}", e);
-        std::process::exit(1);
-    }
-
-    println!("[Hacker Launcher] Pliki wypakowane do: {}", app_dir.display());
-
-    // --------------------------------------------------------
-    // 4. Uruchom main.py przez PyO3
-    // --------------------------------------------------------
-    let result = Python::with_gil(|py| -> PyResult<()> {
-        // Dodaj katalog aplikacji do sys.path
-        let sys = py.import_bound("sys")?;
-        let path = sys.getattr("path")?;
-        path.call_method1(
-            "insert",
-            (0, app_dir.to_str().unwrap_or("")),
-        )?;
-
-        // Ustaw sys.argv (przekaż oryginalne argumenty)
-        let argv: Vec<String> = env::args().collect();
-        let py_argv: Vec<&str> = argv.iter().map(String::as_str).collect();
-        sys.setattr("argv", py_argv.to_object(py))?;
-
-        // Ustaw __file__ i __name__ żeby main.py działał poprawnie
-        let globals = PyDict::new_bound(py);
-        globals.set_item("__name__", "__main__")?;
-        globals.set_item(
-            "__file__",
-            app_dir.join("main.py").to_str().unwrap_or("main.py"),
-        )?;
-
-        // Wczytaj i wykonaj main.py
-        let main_py_content = std::str::from_utf8(MAIN_PY)
-        .map_err(|e| {
-            pyo3::exceptions::PyUnicodeDecodeError::new_err(format!(
-                "Błąd dekodowania main.py: {}",
-                e
-            ))
-        })?;
-
-        py.run_bound(main_py_content, Some(&globals), None)?;
-
-        Ok(())
-    });
-
-    match result {
-        Ok(_) => {}
-        Err(e) => {
-            eprintln!("[Hacker Launcher] Błąd Pythona:\n{}", e);
-            std::process::exit(1);
-        }
-    }
+    tauri::Builder::default()
+        .manage(AppState {
+            config: Mutex::new(config),
+            proton: Mutex::new(proton),
+            game: Mutex::new(game),
+        })
+        .invoke_handler(tauri::generate_handler![
+            get_settings,
+            save_settings,
+            get_paths,
+            get_games,
+            add_game,
+            remove_game,
+            update_game,
+            launch_game,
+            get_installed_protons,
+            get_available_ge,
+            get_available_official,
+            install_proton,
+            install_custom_tar,
+            install_custom_folder,
+            remove_proton,
+            check_proton_update,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
 }
