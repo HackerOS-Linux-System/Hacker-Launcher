@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
+// Tauri v2: emit via AppHandle, not Window
+use tauri::Emitter;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProtonEntry {
@@ -45,7 +47,11 @@ impl ProtonManager {
             let entry = entry?;
             let path = entry.path();
             if path.is_dir() {
-                let version = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                let version = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
                 let proton_type = if version.starts_with("GE-Proton") {
                     "GE"
                 } else {
@@ -54,9 +60,9 @@ impl ProtonManager {
                 .to_string();
                 let metadata = fs::metadata(&path)?;
                 let created: DateTime<Local> = metadata
-                    .created()
-                    .unwrap_or(std::time::SystemTime::now())
-                    .into();
+                .created()
+                .unwrap_or(std::time::SystemTime::now())
+                .into();
                 let date = created.format("%Y-%m-%d").to_string();
                 protons.push(ProtonEntry {
                     version,
@@ -83,37 +89,37 @@ impl ProtonManager {
 
     pub async fn fetch_available_ge() -> Result<Vec<String>> {
         let client = reqwest::Client::builder()
-            .user_agent("hacker-launcher/0.5")
-            .build()?;
+        .user_agent("hacker-launcher/0.6")
+        .build()?;
         let url = "https://api.github.com/repos/GloriousEggroll/proton-ge-custom/releases";
         let releases: Vec<GithubRelease> = client.get(url).send().await?.json().await?;
         let mut tags: Vec<String> = releases
-            .into_iter()
-            .filter(|r| r.tag_name.starts_with("GE-Proton"))
-            .map(|r| r.tag_name)
-            .collect();
+        .into_iter()
+        .filter(|r| r.tag_name.starts_with("GE-Proton"))
+        .map(|r| r.tag_name)
+        .collect();
         tags.sort_by(|a, b| version_sort_key(b).cmp(&version_sort_key(a)));
         Ok(tags)
     }
 
     pub async fn fetch_available_official(stable: bool) -> Result<Vec<String>> {
         let client = reqwest::Client::builder()
-            .user_agent("hacker-launcher/0.5")
-            .build()?;
+        .user_agent("hacker-launcher/0.6")
+        .build()?;
         let url = "https://api.github.com/repos/ValveSoftware/Proton/releases";
         let releases: Vec<GithubRelease> = client.get(url).send().await?.json().await?;
         let mut tags: Vec<String> = releases
-            .into_iter()
-            .filter(|r| {
-                let lower = r.tag_name.to_lowercase();
-                if stable {
-                    !lower.contains("experimental") && !lower.contains("hotfix")
-                } else {
-                    lower.contains("experimental") || lower.contains("hotfix")
-                }
-            })
-            .map(|r| r.tag_name)
-            .collect();
+        .into_iter()
+        .filter(|r| {
+            let lower = r.tag_name.to_lowercase();
+            if stable {
+                !lower.contains("experimental") && !lower.contains("hotfix")
+            } else {
+                lower.contains("experimental") || lower.contains("hotfix")
+            }
+        })
+        .map(|r| r.tag_name)
+        .collect();
         tags.sort_by(|a, b| version_sort_key(b).cmp(&version_sort_key(a)));
         Ok(tags)
     }
@@ -153,11 +159,12 @@ impl ProtonManager {
         Ok(None)
     }
 
+    // Tauri v2: accept AppHandle instead of Window
     pub async fn install_proton_async(
         protons_dir: PathBuf,
         version: String,
         proton_type: String,
-        window: tauri::Window,
+        app_handle: tauri::AppHandle,
     ) -> Result<()> {
         let repo = if proton_type == "GE" {
             "GloriousEggroll/proton-ge-custom"
@@ -166,24 +173,24 @@ impl ProtonManager {
         };
 
         let client = reqwest::Client::builder()
-            .user_agent("hacker-launcher/0.5")
-            .build()?;
+        .user_agent("hacker-launcher/0.6")
+        .build()?;
 
         let url = format!("https://api.github.com/repos/{}/releases", repo);
         let releases: Vec<GithubRelease> = client.get(&url).send().await?.json().await?;
 
         let release = releases
-            .into_iter()
-            .find(|r| r.tag_name == version)
-            .with_context(|| format!("No release found for {}", version))?;
+        .into_iter()
+        .find(|r| r.tag_name == version)
+        .with_context(|| format!("No release found for {}", version))?;
 
         let asset = release
-            .assets
-            .into_iter()
-            .find(|a| a.name.ends_with(".tar.gz"))
-            .with_context(|| format!("No tar.gz asset found for {}", version))?;
+        .assets
+        .into_iter()
+        .find(|a| a.name.ends_with(".tar.gz"))
+        .with_context(|| format!("No tar.gz asset found for {}", version))?;
 
-        emit_progress(&window, "Downloading", 0, 100);
+        emit_progress(&app_handle, "Downloading", 0, 100);
 
         let response = client.get(&asset.browser_download_url).send().await?;
         let total_size = response.content_length().unwrap_or(0);
@@ -198,18 +205,18 @@ impl ProtonManager {
                 file.write_all(&chunk)?;
                 downloaded += chunk.len() as u64;
                 if total_size > 0 {
-                    emit_progress(&window, "Downloading", downloaded, total_size);
+                    emit_progress(&app_handle, "Downloading", downloaded, total_size);
                 }
             }
         }
 
-        emit_progress(&window, "Extracting", 0, 100);
+        emit_progress(&app_handle, "Extracting", 0, 100);
         let extract_dir = protons_dir.join(&version);
         fs::create_dir_all(&extract_dir)?;
 
         let tmp_path_clone = tmp_path.clone();
         let extract_dir_clone = extract_dir.clone();
-        let window_clone = window.clone();
+        let app_handle_clone = app_handle.clone();
 
         tokio::task::spawn_blocking(move || -> Result<()> {
             let file = fs::File::open(&tmp_path_clone)?;
@@ -223,9 +230,9 @@ impl ProtonManager {
                 let path = entry.path()?.to_path_buf();
                 // Security: strip absolute paths
                 let stripped = path
-                    .components()
-                    .skip(1)
-                    .collect::<std::path::PathBuf>();
+                .components()
+                .skip(1)
+                .collect::<std::path::PathBuf>();
                 let dest = extract_dir_clone.join(&stripped);
                 if let Some(parent) = dest.parent() {
                     fs::create_dir_all(parent).ok();
@@ -233,7 +240,7 @@ impl ProtonManager {
                 entry.unpack(&dest).ok();
                 extracted += entry.size();
                 if total_size > 0 {
-                    emit_progress(&window_clone, "Extracting", extracted, total_size);
+                    emit_progress(&app_handle_clone, "Extracting", extracted, total_size);
                 }
             }
             Ok(())
@@ -244,10 +251,13 @@ impl ProtonManager {
 
         if Self::get_proton_binary(&extract_dir).is_none() {
             fs::remove_dir_all(&extract_dir).ok();
-            bail!("Proton binary not found after extraction for {}", version);
+            bail!(
+                "Proton binary not found after extraction for {}",
+                version
+            );
         }
 
-        emit_progress(&window, "Done", 100, 100);
+        emit_progress(&app_handle, "Done", 100, 100);
         Ok(())
     }
 
@@ -255,16 +265,16 @@ impl ProtonManager {
         protons_dir: PathBuf,
         tar_path: String,
         version: String,
-        window: tauri::Window,
+        app_handle: tauri::AppHandle,
     ) -> Result<()> {
         let extract_dir = protons_dir.join(&version);
         fs::create_dir_all(&extract_dir)?;
 
-        emit_progress(&window, "Extracting", 0, 100);
+        emit_progress(&app_handle, "Extracting", 0, 100);
 
         let tar_path = PathBuf::from(tar_path);
         let extract_dir_clone = extract_dir.clone();
-        let window_clone = window.clone();
+        let app_handle_clone = app_handle.clone();
 
         tokio::task::spawn_blocking(move || -> Result<()> {
             let file = fs::File::open(&tar_path)?;
@@ -277,9 +287,9 @@ impl ProtonManager {
                 let mut entry = entry?;
                 let path = entry.path()?.to_path_buf();
                 let stripped = path
-                    .components()
-                    .skip(1)
-                    .collect::<std::path::PathBuf>();
+                .components()
+                .skip(1)
+                .collect::<std::path::PathBuf>();
                 let dest = extract_dir_clone.join(&stripped);
                 if let Some(parent) = dest.parent() {
                     fs::create_dir_all(parent).ok();
@@ -287,7 +297,7 @@ impl ProtonManager {
                 entry.unpack(&dest).ok();
                 extracted += entry.size();
                 if total_size > 0 {
-                    emit_progress(&window_clone, "Extracting", extracted, total_size);
+                    emit_progress(&app_handle_clone, "Extracting", extracted, total_size);
                 }
             }
             Ok(())
@@ -296,10 +306,13 @@ impl ProtonManager {
 
         if Self::get_proton_binary(&extract_dir).is_none() {
             fs::remove_dir_all(&extract_dir).ok();
-            bail!("Proton binary not found after extraction for {}", version);
+            bail!(
+                "Proton binary not found after extraction for {}",
+                version
+            );
         }
 
-        emit_progress(&window, "Done", 100, 100);
+        emit_progress(&app_handle, "Done", 100, 100);
         Ok(())
     }
 
@@ -323,8 +336,9 @@ impl ProtonManager {
     }
 }
 
-fn emit_progress(window: &tauri::Window, stage: &str, value: u64, total: u64) {
-    let _ = window.emit(
+// Tauri v2: AppHandle::emit (global broadcast), requires tauri::Emitter trait in scope
+fn emit_progress(app: &tauri::AppHandle, stage: &str, value: u64, total: u64) {
+    let _ = app.emit(
         "proton_progress",
         serde_json::json!({
             "stage": stage,
@@ -350,9 +364,9 @@ fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
 
 fn version_sort_key(v: &str) -> Vec<i64> {
     v.chars()
-        .filter(|c| c.is_ascii_digit() || *c == '.')
-        .collect::<String>()
-        .split('.')
-        .filter_map(|p| p.parse::<i64>().ok())
-        .collect()
+    .filter(|c| c.is_ascii_digit() || *c == '.')
+    .collect::<String>()
+    .split('.')
+    .filter_map(|p| p.parse::<i64>().ok())
+    .collect()
 }
